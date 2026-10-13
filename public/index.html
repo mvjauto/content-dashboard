@@ -50,6 +50,11 @@
   .companyrow .stats { display: flex; gap: 22px; font-size: 13px; color: #555; }
   .companyrow .stats .num { font-weight: 700; color: #2d6b48; font-size: 16px; display: block; }
   .companyrow .inactive { color: #bbb; font-size: 11px; }
+  .companyrow .viewbtn { font-size: 12px; padding: 5px 10px; margin-left: 10px; }
+  .filterchip { display: inline-block; background: #e8f3ec; color: #2d6b48; font-size: 13px;
+                padding: 5px 12px; border-radius: 14px; margin-bottom: 12px; }
+  .filterchip button { background: none; border: none; color: #2d6b48; font-weight: 700; cursor: pointer;
+                        margin-left: 6px; padding: 0; }
 </style>
 </head>
 <body>
@@ -66,7 +71,7 @@
   <div class="topbar">
     <div class="tabs">
       <button class="tab" id="tab-home" onclick="showTab('home')">Home</button>
-      <button class="tab" id="tab-queue" onclick="showTab('queue')">Approval Queue</button>
+      <button class="tab" id="tab-queue" onclick="clearQueueFilter(); showTab('queue')">Approval Queue</button>
       <button class="tab" id="tab-broll" onclick="showTab('broll')">B-Roll</button>
     </div>
     <span style="flex:1;"></span>
@@ -87,6 +92,7 @@
 
   <section id="section-queue" style="display:none;">
     <h2>Approval queue</h2>
+    <div id="queueFilterChip"></div>
     <div id="posts"></div>
   </section>
 
@@ -164,7 +170,7 @@ async function loadHomeCompanies() {
         const needsReview = allPosts.filter(p => p.client_id === c.id && p.status === "needs_review").length;
         const broll = brollCounts.find(b => b.slug === c.slug);
         return `
-        <div class="companyrow" onclick="showTab('queue');">
+        <div class="companyrow">
             <div>
                 <div class="name">${c.name}</div>
                 ${!c.active ? `<div class="inactive">not yet operating</div>` : ""}
@@ -172,15 +178,37 @@ async function loadHomeCompanies() {
             <div class="stats">
                 <div><span class="num">${needsReview}</span>need review</div>
                 <div><span class="num">${broll ? broll.count : 0}</span>raw clips</div>
+                <button class="viewbtn" onclick="event.stopPropagation(); showCompanyQueue('${c.slug}')">Approval Queue</button>
+                <a class="viewbtn" style="text-decoration:none; display:inline-block; border:1px solid #ccc; border-radius:4px; color:inherit;" onclick="event.stopPropagation();" href="/client.html?slug=${c.slug}">B-Roll</a>
             </div>
         </div>`;
     }).join("");
 }
 
+let queueFilterSlug = null;
+
+function showCompanyQueue(slug) {
+    queueFilterSlug = slug;
+    showTab("queue");
+    loadPosts();
+}
+
+function clearQueueFilter() {
+    queueFilterSlug = null;
+    loadPosts();
+}
+
 const trimState = {}; // postId -> { start, end, duration }
 
 async function loadPosts() {
-    const posts = await (await fetch("/api/posts")).json();
+    const all = await (await fetch("/api/posts")).json();
+    const filterClient = queueFilterSlug ? myClients.find(c => c.slug === queueFilterSlug) : null;
+    const posts = filterClient ? all.filter(p => p.client_id === filterClient.id) : all;
+
+    document.getElementById("queueFilterChip").innerHTML = filterClient
+        ? `<span class="filterchip">${filterClient.name} only<button onclick="clearQueueFilter()">✕ show all</button></span>`
+        : "";
+
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
             <div class="client">${p.clients ? p.clients.name : ""}</div>
