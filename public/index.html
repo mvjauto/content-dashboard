@@ -17,6 +17,12 @@
   .status.approved { background: #bbf7d0; }
   #app { display: none; }
   #err { color: #c0392b; font-size: 13px; }
+  .trimwrap { margin: 10px 0; user-select: none; }
+  .trimtimes { font-size: 11px; color: #888; margin-bottom: 4px; }
+  .trimbar { position: relative; height: 28px; background: #eee; border-radius: 5px; }
+  .trimrange { position: absolute; top: 0; bottom: 0; background: #bbf7d0; }
+  .trimhandle { position: absolute; top: -3px; bottom: -3px; width: 14px; margin-left: -7px;
+                background: #2d6b48; border-radius: 4px; cursor: ew-resize; }
 </style>
 </head>
 <body>
@@ -77,34 +83,87 @@ async function showApp() {
     loadRawMedia();
 }
 
+const trimState = {}; // postId -> { start, end, duration }
+
 async function loadPosts() {
     const posts = await (await fetch("/api/posts")).json();
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
             <span class="status ${p.status}">${p.status}</span>
             ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">trimmed cut</div>` : ""}
-            ${p.media_url ? `<video src="${p.media_url}" controls style="max-width:100%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
+            ${p.media_url ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:50%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
             <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
-            <div style="font-size:12px; color:#888; margin:8px 0;">
-                Trim to section (seconds):
-                <input type="number" id="start-${p.id}" placeholder="start" style="width:60px; display:inline; margin:0 4px;" step="0.1">
-                to
-                <input type="number" id="end-${p.id}" placeholder="end" style="width:60px; display:inline; margin:0 4px;" step="0.1">
-                <button onclick="trim('${p.id}')">Trim</button>
-            </div>
+            ${p.media_url ? `
+            <div class="trimwrap">
+                <div class="trimtimes" id="trimtimes-${p.id}">Start: 0.0s — End: 0.0s</div>
+                <div class="trimbar" id="trimbar-${p.id}">
+                    <div class="trimrange" id="trimrange-${p.id}"></div>
+                    <div class="trimhandle" id="trimhandle-start-${p.id}" data-role="start"></div>
+                    <div class="trimhandle" id="trimhandle-end-${p.id}" data-role="end"></div>
+                </div>
+                <button onclick="trim('${p.id}')" style="margin-top:8px;">Trim to this section</button>
+            </div>` : ""}
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
         </div>
     `).join("") : "<p>Nothing waiting on review.</p>";
+
+    posts.forEach(p => {
+        if (!p.media_url) return;
+        const video = document.getElementById(`video-${p.id}`);
+        video.addEventListener("loadedmetadata", () => initTrimBar(p.id, video.duration));
+    });
+}
+
+function initTrimBar(postId, duration) {
+    trimState[postId] = { start: 0, end: duration, duration };
+    renderTrimBar(postId);
+
+    const bar = document.getElementById(`trimbar-${postId}`);
+    ["start", "end"].forEach(role => {
+        const handle = document.getElementById(`trimhandle-${role}-${postId}`);
+        handle.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            const onMove = (moveEvent) => {
+                const rect = bar.getBoundingClientRect();
+                let frac = (moveEvent.clientX - rect.left) / rect.width;
+                frac = Math.max(0, Math.min(1, frac));
+                const t = frac * duration;
+                const s = trimState[postId];
+                if (role === "start") s.start = Math.min(t, s.end - 0.1);
+                else s.end = Math.max(t, s.start + 0.1);
+                s.start = Math.max(0, s.start);
+                s.end = Math.min(duration, s.end);
+                renderTrimBar(postId);
+                document.getElementById(`video-${postId}`).currentTime = role === "start" ? s.start : s.end;
+            };
+            const onUp = () => {
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+        });
+    });
+}
+
+function renderTrimBar(postId) {
+    const s = trimState[postId];
+    const startPct = (s.start / s.duration) * 100;
+    const endPct = (s.end / s.duration) * 100;
+    document.getElementById(`trimhandle-start-${postId}`).style.left = `${startPct}%`;
+    document.getElementById(`trimhandle-end-${postId}`).style.left = `${endPct}%`;
+    document.getElementById(`trimrange-${postId}`).style.left = `${startPct}%`;
+    document.getElementById(`trimrange-${postId}`).style.width = `${endPct - startPct}%`;
+    document.getElementById(`trimtimes-${postId}`).textContent =
+        `Start: ${s.start.toFixed(1)}s — End: ${s.end.toFixed(1)}s`;
 }
 
 async function trim(postId) {
-    const start = parseFloat(document.getElementById(`start-${postId}`).value);
-    const end = parseFloat(document.getElementById(`end-${postId}`).value);
-    if (isNaN(start) || isNaN(end)) { alert("Enter both a start and end time."); return; }
+    const s = trimState[postId];
     const res = await fetch(`/api/posts/${postId}/trim`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start, end }),
+        body: JSON.stringify({ start: s.start, end: s.end }),
     });
     if (!res.ok) { alert("Trim failed: " + (await res.json()).error); return; }
     loadPosts();
