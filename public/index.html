@@ -82,11 +82,32 @@ async function loadPosts() {
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
             <span class="status ${p.status}">${p.status}</span>
+            ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">trimmed cut</div>` : ""}
             ${p.media_url ? `<video src="${p.media_url}" controls style="max-width:100%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
             <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
+            <div style="font-size:12px; color:#888; margin:8px 0;">
+                Trim to section (seconds):
+                <input type="number" id="start-${p.id}" placeholder="start" style="width:60px; display:inline; margin:0 4px;" step="0.1">
+                to
+                <input type="number" id="end-${p.id}" placeholder="end" style="width:60px; display:inline; margin:0 4px;" step="0.1">
+                <button onclick="trim('${p.id}')">Trim</button>
+            </div>
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
         </div>
     `).join("") : "<p>Nothing waiting on review.</p>";
+}
+
+async function trim(postId) {
+    const start = parseFloat(document.getElementById(`start-${postId}`).value);
+    const end = parseFloat(document.getElementById(`end-${postId}`).value);
+    if (isNaN(start) || isNaN(end)) { alert("Enter both a start and end time."); return; }
+    const res = await fetch(`/api/posts/${postId}/trim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ start, end }),
+    });
+    if (!res.ok) { alert("Trim failed: " + (await res.json()).error); return; }
+    loadPosts();
 }
 
 async function loadRawMedia() {

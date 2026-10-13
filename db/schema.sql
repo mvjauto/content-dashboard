@@ -52,6 +52,7 @@ create table posts (
   published_at timestamptz,
   external_post_id text,                -- id returned by the platform once published
   approved_by uuid,                     -- references users(id); nullable until approved
+  edited_media_path text,               -- the human-trimmed/cropped cut, once one exists
   created_at timestamptz not null default now()
 );
 

@@ -1,4 +1,9 @@
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
+const execFileAsync = promisify(execFile);
 const express = require("express");
 const session = require("express-session");
 const bcrypt = require("bcrypt");
@@ -114,12 +119,14 @@ app.get("/api/posts", requireLogin, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
 
     // A caption without the clip it goes with isn't reviewable -- sign the
-    // URL here so the approval card can actually show the footage.
+    // URL here so the approval card can actually show the footage. Once a
+    // post has a human-trimmed cut, that's what shows -- never the raw clip.
     const withUrls = await Promise.all(data.map(async (post) => {
-        if (!post.raw_media) return post;
+        const showPath = post.edited_media_path || (post.raw_media && post.raw_media.storage_path);
+        if (!showPath) return post;
         const { data: signed } = await supabase.storage
             .from("raw-media")
-            .createSignedUrl(post.raw_media.storage_path, 3600);
+            .createSignedUrl(showPath, 3600);
         return { ...post, media_url: signed ? signed.signedUrl : null };
     }));
     res.json(withUrls);
@@ -134,6 +141,56 @@ app.post("/api/posts/:id/approve", requireLogin, async (req, res) => {
         .eq("id", req.params.id);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ok: true });
+});
+
+// The human-judgment step: picking the section of raw footage that's
+// actually usable, and cropping it, happens here -- before any automated
+// overlay/hook work touches the clip. Trims via ffmpeg (already installed,
+// no extra dependency), writes the cut to its own path so the original raw
+// clip is never overwritten, and points the post at the cut via
+// edited_media_path.
+app.post("/api/posts/:id/trim", requireLogin, async (req, res) => {
+    const { start, end, crop } = req.body; // start/end in seconds; crop: {x,y,w,h} in pixels, optional
+    if (typeof start !== "number" || typeof end !== "number" || end <= start) {
+        return res.status(400).json({ error: "start and end (seconds) are required, end must be after start" });
+    }
+
+    const { data: post, error: postErr } = await supabase
+        .from("posts").select("*, raw_media(storage_path)").eq("id", req.params.id).single();
+    if (postErr || !post) return res.status(404).json({ error: "post not found" });
+
+    const { data: fileBlob, error: dlErr } = await supabase.storage
+        .from("raw-media").download(post.raw_media.storage_path);
+    if (dlErr) return res.status(500).json({ error: "couldn't fetch source clip: " + dlErr.message });
+
+    const tmpIn = path.join(os.tmpdir(), `trim-in-${Date.now()}.mp4`);
+    const tmpOut = path.join(os.tmpdir(), `trim-out-${Date.now()}.mp4`);
+    fs.writeFileSync(tmpIn, Buffer.from(await fileBlob.arrayBuffer()));
+
+    const args = ["-y", "-i", tmpIn, "-ss", String(start), "-to", String(end)];
+    if (crop && crop.w && crop.h) {
+        args.push("-vf", `crop=${crop.w}:${crop.h}:${crop.x || 0}:${crop.y || 0}`);
+    }
+    args.push("-c:v", "libx264", "-c:a", "aac", tmpOut);
+
+    try {
+        await execFileAsync("ffmpeg", args);
+    } catch (e) {
+        fs.unlinkSync(tmpIn);
+        return res.status(500).json({ error: "ffmpeg failed: " + e.message });
+    }
+
+    const editedPath = `${post.client_id}/edited/${post.id}.mp4`;
+    const { error: upErr } = await supabase.storage
+        .from("raw-media").upload(editedPath, fs.readFileSync(tmpOut), { upsert: true });
+    fs.unlinkSync(tmpIn);
+    fs.unlinkSync(tmpOut);
+    if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+
+    await supabase.from("posts").update({ edited_media_path: editedPath }).eq("id", post.id);
+
+    const { data: signed } = await supabase.storage.from("raw-media").createSignedUrl(editedPath, 3600);
+    res.json({ ok: true, url: signed ? signed.signedUrl : null });
 });
 
 const port = process.env.PORT || 3000;
