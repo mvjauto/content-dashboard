@@ -135,7 +135,7 @@ app.get("/api/posts", requireLogin, async (req, res) => {
     const clientIds = clients.map(c => c.id);
     const { data, error } = await supabase
         .from("posts")
-        .select("*, raw_media(storage_path, media_type)")
+        .select("*, raw_media(storage_path, media_type), clients(name)")
         .in("client_id", clientIds)
         .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });

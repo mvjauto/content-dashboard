@@ -69,12 +69,11 @@
       <button class="tab" id="tab-queue" onclick="showTab('queue')">Approval Queue</button>
       <button class="tab" id="tab-broll" onclick="showTab('broll')">B-Roll</button>
     </div>
-    <span id="companyLabel" style="flex:1; text-align:center; font-size:13px; color:#2d6b48; font-weight:600;"></span>
+    <span style="flex:1;"></span>
     <div class="usermenu">
       <div class="avatar" id="avatar" onclick="toggleUserMenu()"></div>
       <div class="usermenu-dropdown" id="usermenu-dropdown" style="display:none;">
         <div class="who" id="who"></div>
-        <div id="companySwitcher"></div>
         <hr>
         <button class="signout" onclick="logout()">Sign out</button>
       </div>
@@ -101,7 +100,6 @@
 <script>
 let me = null;
 let myClients = [];
-let activeClientSlug = "811-assist"; // defaults to the one client that's actually live right now
 
 async function login() {
     const email = document.getElementById("email").value;
@@ -135,31 +133,6 @@ function toggleUserMenu() {
     el.style.display = el.style.display === "none" ? "block" : "none";
 }
 
-function renderCompanySwitcher() {
-    const el = document.getElementById("companySwitcher");
-    if (myClients.length <= 1) { el.innerHTML = ""; return; }
-    const opts = [{ slug: null, name: "All companies" }, ...myClients];
-    el.innerHTML = opts.map(c => `
-        <button class="company-opt ${activeClientSlug === c.slug ? "active" : ""}" onclick="switchCompany(${c.slug ? `'${c.slug}'` : "null"})">${c.name}</button>
-    `).join("");
-}
-
-function switchCompany(slug) {
-    activeClientSlug = slug;
-    toggleUserMenu();
-    renderCompanySwitcher();
-    renderCompanyLabel();
-    loadPosts();
-    loadRawMedia();
-}
-
-function renderCompanyLabel() {
-    const el = document.getElementById("companyLabel");
-    if (!activeClientSlug) { el.textContent = "All companies"; return; }
-    const client = myClients.find(c => c.slug === activeClientSlug);
-    el.textContent = client ? client.name : "";
-}
-
 function showTab(tab) {
     ["home", "queue", "broll"].forEach(t => {
         document.getElementById(`section-${t}`).style.display = t === tab ? "block" : "none";
@@ -174,8 +147,6 @@ async function showApp() {
     myClients = await (await fetch("/api/clients")).json();
     document.getElementById("avatar").textContent = initials(me.name);
     document.getElementById("who").textContent = `${me.name} (${me.role})`;
-    renderCompanySwitcher();
-    renderCompanyLabel();
     showTab("home");
     loadHomeCompanies();
     loadPosts();
@@ -193,7 +164,7 @@ async function loadHomeCompanies() {
         const needsReview = allPosts.filter(p => p.client_id === c.id && p.status === "needs_review").length;
         const broll = brollCounts.find(b => b.slug === c.slug);
         return `
-        <div class="companyrow" onclick="switchCompany('${c.slug}'); showTab('queue');">
+        <div class="companyrow" onclick="showTab('queue');">
             <div>
                 <div class="name">${c.name}</div>
                 ${!c.active ? `<div class="inactive">not yet operating</div>` : ""}
@@ -206,19 +177,13 @@ async function loadHomeCompanies() {
     }).join("");
 }
 
-function visiblePosts(posts) {
-    if (!activeClientSlug) return posts;
-    const client = myClients.find(c => c.slug === activeClientSlug);
-    return client ? posts.filter(p => p.client_id === client.id) : posts;
-}
-
 const trimState = {}; // postId -> { start, end, duration }
 
 async function loadPosts() {
-    const all = await (await fetch("/api/posts")).json();
-    const posts = visiblePosts(all);
+    const posts = await (await fetch("/api/posts")).json();
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
+            <div class="client">${p.clients ? p.clients.name : ""}</div>
             <span class="status ${p.status}">${p.status}</span>
             ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">trimmed cut</div>` : ""}
             ${p.media_url ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:120px; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
@@ -300,8 +265,7 @@ async function trim(postId) {
 }
 
 async function loadRawMedia() {
-    const all = await (await fetch("/api/raw-media")).json();
-    const counts = activeClientSlug ? all.filter(c => c.slug === activeClientSlug) : all;
+    const counts = await (await fetch("/api/raw-media")).json();
     document.getElementById("rawMedia").innerHTML = counts.length ? counts.map(c => `
         <a class="card" style="display:block; text-decoration:none; color:inherit;" href="/client.html?slug=${c.slug}">
             <strong>${c.name}</strong> — ${c.count} clip${c.count === 1 ? "" : "s"}
