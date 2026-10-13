@@ -82,7 +82,8 @@ async function loadPosts() {
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
             <span class="status ${p.status}">${p.status}</span>
-            <p>${p.caption_draft || "(no caption yet)"}</p>
+            ${p.media_url ? `<video src="${p.media_url}" controls style="max-width:100%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
+            <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
         </div>
     `).join("") : "<p>Nothing waiting on review.</p>";

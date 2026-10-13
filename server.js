@@ -108,11 +108,21 @@ app.get("/api/posts", requireLogin, async (req, res) => {
     const clientIds = clients.map(c => c.id);
     const { data, error } = await supabase
         .from("posts")
-        .select("*")
+        .select("*, raw_media(storage_path, media_type)")
         .in("client_id", clientIds)
         .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
+
+    // A caption without the clip it goes with isn't reviewable -- sign the
+    // URL here so the approval card can actually show the footage.
+    const withUrls = await Promise.all(data.map(async (post) => {
+        if (!post.raw_media) return post;
+        const { data: signed } = await supabase.storage
+            .from("raw-media")
+            .createSignedUrl(post.raw_media.storage_path, 3600);
+        return { ...post, media_url: signed ? signed.signedUrl : null };
+    }));
+    res.json(withUrls);
 });
 
 // Approve a draft -- logs who approved it, flips status, still doesn't
