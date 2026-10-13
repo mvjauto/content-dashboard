@@ -1,11 +1,14 @@
+const path = require("path");
 const express = require("express");
 const session = require("express-session");
+const bcrypt = require("bcrypt");
 const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 const app = express();
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 app.use(session({
     secret: process.env.SESSION_SECRET,
     resave: false,
@@ -33,6 +36,22 @@ async function clientsVisibleTo(user) {
 }
 
 app.get("/health", (req, res) => res.json({ ok: true }));
+
+app.post("/api/login", async (req, res) => {
+    const { email, password } = req.body;
+    const { data: user } = await supabase.from("users").select("*").eq("email", email).single();
+    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+        return res.status(401).json({ error: "invalid email or password" });
+    }
+    req.session.user = { id: user.id, email: user.email, name: user.name, role: user.role };
+    res.json({ ok: true, user: req.session.user });
+});
+
+app.post("/api/logout", (req, res) => {
+    req.session.destroy(() => res.json({ ok: true }));
+});
+
+app.get("/api/me", requireLogin, (req, res) => res.json(req.session.user));
 
 app.get("/api/clients", requireLogin, async (req, res) => {
     res.json(await clientsVisibleTo(req.session.user));

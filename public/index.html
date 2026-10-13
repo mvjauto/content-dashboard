@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Content Dashboard</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; color: #222; }
+  h1 { font-size: 20px; }
+  section { margin-top: 32px; }
+  #login { max-width: 320px; }
+  input { display: block; width: 100%; margin-bottom: 8px; padding: 8px; box-sizing: border-box; }
+  button { padding: 8px 16px; cursor: pointer; }
+  .card { border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+  .card .client { font-size: 11px; text-transform: uppercase; color: #888; }
+  .status { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #eee; }
+  .status.needs_review { background: #fde68a; }
+  .status.approved { background: #bbf7d0; }
+  #app { display: none; }
+  #err { color: #c0392b; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>Content Dashboard — Sign in</h1>
+  <input id="email" type="email" placeholder="Email">
+  <input id="password" type="password" placeholder="Password">
+  <button onclick="login()">Sign in</button>
+  <div id="err"></div>
+</div>
+
+<div id="app">
+  <h1>Content Dashboard</h1>
+  <p id="whoami"></p>
+  <button onclick="logout()">Sign out</button>
+
+  <section>
+    <h2>Approval queue</h2>
+    <div id="posts"></div>
+  </section>
+
+  <section>
+    <h2>Raw footage (B-roll)</h2>
+    <div id="rawMedia"></div>
+  </section>
+</div>
+
+<script>
+async function login() {
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+    });
+    if (!res.ok) {
+        document.getElementById("err").textContent = "Wrong email or password.";
+        return;
+    }
+    showApp();
+}
+
+async function logout() {
+    await fetch("/api/logout", { method: "POST" });
+    document.getElementById("app").style.display = "none";
+    document.getElementById("login").style.display = "block";
+}
+
+async function showApp() {
+    document.getElementById("login").style.display = "none";
+    document.getElementById("app").style.display = "block";
+    const me = await (await fetch("/api/me")).json();
+    document.getElementById("whoami").textContent = `Signed in as ${me.name} (${me.role})`;
+    loadPosts();
+    loadRawMedia();
+}
+
+async function loadPosts() {
+    const posts = await (await fetch("/api/posts")).json();
+    document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
+        <div class="card">
+            <span class="status ${p.status}">${p.status}</span>
+            <p>${p.caption_draft || "(no caption yet)"}</p>
+            ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
+        </div>
+    `).join("") : "<p>Nothing waiting on review.</p>";
+}
+
+async function loadRawMedia() {
+    const media = await (await fetch("/api/raw-media")).json();
+    document.getElementById("rawMedia").innerHTML = media.length ? media.map(m => `
+        <div class="card">
+            <div class="client">${m.media_type} — from ${m.sender || "unknown"}</div>
+            <p>${m.caption_raw || "(no caption)"}</p>
+        </div>
+    `).join("") : "<p>Nothing in the bin yet.</p>";
+}
+
+async function approve(id) {
+    await fetch(`/api/posts/${id}/approve`, { method: "POST" });
+    loadPosts();
+}
+
+// If a session cookie is already valid, skip straight past the login form.
+fetch("/api/me").then(r => { if (r.ok) showApp(); });
+</script>
+
+</body>
+</html>
