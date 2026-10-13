@@ -360,8 +360,18 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
 
     // Held for the first 2.5s, matching the reel concepts' "hook, first 2
     // seconds" spec -- a beat longer so it's actually readable, not a flash.
+    //
+    // Style redesigned 2026-10-12 per Josh ("not just a black box, something
+    // that stands out") and real research on what actually reads on short-form
+    // video: white fill is the safest universal contrast, but a flat box read
+    // as generic. Swapped the box for a thick colored stroke (construction
+    // orange -- fits this content specifically) plus a drop shadow, which is
+    // the most consistently recommended "produced" look across sources and
+    // still passes the "readable on the worst frame" test a flat box can fail.
+    const HOOK_ACCENT_COLOR = "0xFF6A00"; // construction-cone orange
     const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(wrapped)}':`
-        + `fontsize=${fontsize}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=14:line_spacing=6:`
+        + `fontsize=${fontsize}:fontcolor=white:bordercolor=${HOOK_ACCENT_COLOR}:borderw=5:`
+        + `shadowcolor=black@0.7:shadowx=2:shadowy=2:line_spacing=8:`
         + `x=(w-text_w)/2:y=h*0.12:enable='lt(t,2.5)'`;
 
     const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
