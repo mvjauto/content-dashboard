@@ -11,6 +11,11 @@ const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
+// ffmpeg-full specifically, not the system "ffmpeg" -- the plain Homebrew
+// ffmpeg formula doesn't ship libfreetype, so it has no drawtext filter.
+// Full path so this doesn't depend on PATH or on Josh's own shell setup.
+const FFMPEG_BIN = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg";
+
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -196,7 +201,7 @@ app.post("/api/posts/:id/trim", requireLogin, async (req, res) => {
     args.push("-c:v", "libx264", "-c:a", "aac", tmpOut);
 
     try {
-        await execFileAsync("ffmpeg", args);
+        await execFileAsync(FFMPEG_BIN, args);
     } catch (e) {
         fs.unlinkSync(tmpIn);
         return res.status(500).json({ error: "ffmpeg failed: " + e.message });
@@ -224,11 +229,33 @@ function escapeDrawtext(text) {
 
 const HOOK_FONT = "/System/Library/Fonts/Supplemental/Arial Bold.ttf";
 
+// Greedy word-wrap so the hook text actually fits the frame instead of
+// running off both edges -- the bug seen on the first real test. maxChars
+// is an estimate (bold sans-serif averages ~0.58x fontsize px per char).
+function wrapText(text, maxChars) {
+    const words = text.split(" ");
+    const lines = [];
+    let line = "";
+    for (const w of words) {
+        const candidate = line ? `${line} ${w}` : w;
+        if (candidate.length > maxChars && line) {
+            lines.push(line);
+            line = w;
+        } else {
+            line = candidate;
+        }
+    }
+    if (line) lines.push(line);
+    return lines;
+}
+
 // Burns the hook line onto the clip for real -- the automated step Josh
 // asked for, picking up wherever the human-trim step (above) left off.
 // Operates on edited_media_path if a trim exists, otherwise the raw clip.
+// mute (boolean, Josh's per-post choice, not a hardcoded default) strips
+// audio when true; false keeps the clip's original audio track.
 app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
-    const { overlayText } = req.body;
+    const { overlayText, mute } = req.body;
     if (!overlayText || !overlayText.trim()) return res.status(400).json({ error: "overlayText is required" });
 
     const { data: post, error: postErr } = await supabase
@@ -243,14 +270,23 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     const tmpOut = path.join(os.tmpdir(), `finish-out-${Date.now()}.mp4`);
     fs.writeFileSync(tmpIn, Buffer.from(await fileBlob.arrayBuffer()));
 
+    const { stdout: probeOut } = await execFileAsync("/opt/homebrew/opt/ffmpeg-full/bin/ffprobe",
+        ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width", "-of", "csv=p=0", tmpIn]);
+    const width = parseInt(probeOut.trim(), 10) || 1080;
+
+    const fontsize = Math.max(22, Math.min(48, Math.round(width / 16)));
+    const maxChars = Math.floor(width / (fontsize * 0.58));
+    const wrapped = wrapText(overlayText.trim(), maxChars).join("\n");
+
     // Held for the first 2.5s, matching the reel concepts' "hook, first 2
     // seconds" spec -- a beat longer so it's actually readable, not a flash.
-    const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(overlayText.trim())}':`
-        + `fontsize=42:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=14:`
+    const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(wrapped)}':`
+        + `fontsize=${fontsize}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=14:line_spacing=6:`
         + `x=(w-text_w)/2:y=h*0.12:enable='lt(t,2.5)'`;
 
+    const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
     try {
-        await execFileAsync("ffmpeg", ["-y", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", "-c:a", "aac", tmpOut]);
+        await execFileAsync(FFMPEG_BIN, ["-y", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", ...audioArgs, tmpOut]);
     } catch (e) {
         fs.unlinkSync(tmpIn);
         return res.status(500).json({ error: "ffmpeg failed: " + e.message });

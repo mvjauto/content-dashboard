@@ -214,6 +214,7 @@ async function loadPosts() {
             <div class="client">${p.clients ? p.clients.name : ""}</div>
             <span class="status ${p.status}">${p.status}</span>
             ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">trimmed cut</div>` : ""}
+            ${p.finished_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:2px;">✓ finished — hook text burned in</div>` : ""}
             ${p.media_url ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:120px; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
             <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
             ${p.media_url ? `
@@ -225,6 +226,15 @@ async function loadPosts() {
                     <div class="trimhandle" id="trimhandle-end-${p.id}" data-role="end"></div>
                 </div>
                 <button onclick="trim('${p.id}')" style="margin-top:8px;">Trim to this section</button>
+            </div>
+            <div style="margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
+                <input type="text" id="hooktext-${p.id}" placeholder="Hook text to burn onto the video"
+                       value="${(p.overlay_text || "").replace(/"/g, "&quot;")}" style="font-size:13px;">
+                <label style="font-size:12px; color:#555;">
+                    <input type="checkbox" id="mute-${p.id}" checked style="display:inline; width:auto; margin:0 4px 0 0;">
+                    Mute audio
+                </label>
+                <button onclick="finish('${p.id}')" style="margin-top:6px;">Finish (burn hook onto video)</button>
             </div>` : ""}
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
         </div>
@@ -289,6 +299,19 @@ async function trim(postId) {
         body: JSON.stringify({ start: s.start, end: s.end }),
     });
     if (!res.ok) { alert("Trim failed: " + (await res.json()).error); return; }
+    loadPosts();
+}
+
+async function finish(postId) {
+    const overlayText = document.getElementById(`hooktext-${postId}`).value;
+    const mute = document.getElementById(`mute-${postId}`).checked;
+    if (!overlayText.trim()) { alert("Enter the hook text to burn onto the video first."); return; }
+    const res = await fetch(`/api/posts/${postId}/finish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overlayText, mute }),
+    });
+    if (!res.ok) { alert("Finish failed: " + (await res.json()).error); return; }
     loadPosts();
 }
 
