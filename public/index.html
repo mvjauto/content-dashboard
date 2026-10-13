@@ -64,6 +64,7 @@
       <button class="tab" id="tab-home" onclick="showTab('home')">Home</button>
       <button class="tab" id="tab-queue" onclick="showTab('queue')">Approval Queue</button>
       <button class="tab" id="tab-broll" onclick="showTab('broll')">B-Roll</button>
+      <span id="companyLabel" style="margin-left:14px; font-size:13px; color:#2d6b48; font-weight:600; align-self:center;"></span>
     </div>
     <div class="usermenu">
       <div class="avatar" id="avatar" onclick="toggleUserMenu()"></div>
@@ -103,7 +104,7 @@
 <script>
 let me = null;
 let myClients = [];
-let activeClientSlug = null; // null = all companies
+let activeClientSlug = "811-assist"; // defaults to the one client that's actually live right now
 
 async function login() {
     const email = document.getElementById("email").value;
@@ -150,8 +151,16 @@ function switchCompany(slug) {
     activeClientSlug = slug;
     toggleUserMenu();
     renderCompanySwitcher();
+    renderCompanyLabel();
     loadPosts();
     loadRawMedia();
+}
+
+function renderCompanyLabel() {
+    const el = document.getElementById("companyLabel");
+    if (!activeClientSlug) { el.textContent = "All companies"; return; }
+    const client = myClients.find(c => c.slug === activeClientSlug);
+    el.textContent = client ? client.name : "";
 }
 
 function showTab(tab) {
@@ -169,6 +178,7 @@ async function showApp() {
     document.getElementById("avatar").textContent = initials(me.name);
     document.getElementById("who").textContent = `${me.name} (${me.role})`;
     renderCompanySwitcher();
+    renderCompanyLabel();
     showTab("home");
     loadPosts();
     loadRawMedia();
