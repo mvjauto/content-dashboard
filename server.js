@@ -134,6 +134,31 @@ app.delete("/api/raw-media/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Turns a raw B-roll clip into an actual reviewable post. Generic across
+// every client and every media type on purpose -- Josh was explicit that
+// trim/crop/etc. have to be the same tool everywhere, not special-cased per
+// company. No platform_account_id yet (nullable) since publishing is parked
+// for now -- a post can sit in review before any platform is connected.
+app.post("/api/raw-media/:id/create-post", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data: row, error: findErr } = await supabase
+        .from("raw_media").select("*").eq("id", req.params.id).single();
+    if (findErr || !row) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this client" });
+
+    const { data: post, error: insertErr } = await supabase.from("posts").insert({
+        client_id: row.client_id,
+        raw_media_id: row.id,
+        caption_draft: null,
+        status: "needs_review",
+    }).select().single();
+    if (insertErr) return res.status(500).json({ error: insertErr.message });
+
+    res.json({ ok: true, post });
+});
+
 // The approval queue -- nothing here publishes until a human flips it to approved.
 app.get("/api/posts", requireLogin, async (req, res) => {
     const clients = await clientsVisibleTo(req.session.user);
@@ -208,6 +233,49 @@ app.post("/api/posts/:id/trim", requireLogin, async (req, res) => {
     }
 
     const editedPath = `${post.client_id}/edited/${post.id}.mp4`;
+    const { error: upErr } = await supabase.storage
+        .from("raw-media").upload(editedPath, fs.readFileSync(tmpOut), { upsert: true });
+    fs.unlinkSync(tmpIn);
+    fs.unlinkSync(tmpOut);
+    if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+
+    await supabase.from("posts").update({ edited_media_path: editedPath }).eq("id", post.id);
+
+    const { data: signed } = await supabase.storage.from("raw-media").createSignedUrl(editedPath, 3600);
+    res.json({ ok: true, url: signed ? signed.signedUrl : null });
+});
+
+// The photo equivalent of trim, above -- same human-picks-the-section idea,
+// just spatial instead of time-based. Generic across every client, same as
+// trim: this is the one tool every image post uses, not an Axion-Pept-only
+// feature. Uses the same ffmpeg binary rather than a separate image library.
+app.post("/api/posts/:id/crop-image", requireLogin, async (req, res) => {
+    const { x, y, w, h } = req.body;
+    if ([x, y, w, h].some(v => typeof v !== "number") || w <= 0 || h <= 0) {
+        return res.status(400).json({ error: "x, y, w, h (all numbers) are required" });
+    }
+
+    const { data: post, error: postErr } = await supabase
+        .from("posts").select("*, raw_media(storage_path, media_type)").eq("id", req.params.id).single();
+    if (postErr || !post) return res.status(404).json({ error: "post not found" });
+    if (post.raw_media.media_type !== "image") return res.status(400).json({ error: "this post's media isn't an image" });
+
+    const { data: fileBlob, error: dlErr } = await supabase.storage
+        .from("raw-media").download(post.raw_media.storage_path);
+    if (dlErr) return res.status(500).json({ error: "couldn't fetch source image: " + dlErr.message });
+
+    const tmpIn = path.join(os.tmpdir(), `crop-in-${Date.now()}.jpg`);
+    const tmpOut = path.join(os.tmpdir(), `crop-out-${Date.now()}.jpg`);
+    fs.writeFileSync(tmpIn, Buffer.from(await fileBlob.arrayBuffer()));
+
+    try {
+        await execFileAsync(FFMPEG_BIN, ["-y", "-i", tmpIn, "-vf", `crop=${w}:${h}:${x}:${y}`, tmpOut]);
+    } catch (e) {
+        fs.unlinkSync(tmpIn);
+        return res.status(500).json({ error: "ffmpeg failed: " + e.message });
+    }
+
+    const editedPath = `${post.client_id}/edited/${post.id}.jpg`;
     const { error: upErr } = await supabase.storage
         .from("raw-media").upload(editedPath, fs.readFileSync(tmpOut), { upsert: true });
     fs.unlinkSync(tmpIn);

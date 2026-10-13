@@ -25,6 +25,13 @@
   .trimhandle { position: absolute; top: -3px; bottom: -3px; width: 14px; margin-left: -7px;
                 background: #2d6b48; border-radius: 4px; cursor: ew-resize; }
 
+  .cropwrap { margin: 10px 0; user-select: none; }
+  .cropstage { position: relative; display: inline-block; max-width: 280px; }
+  .cropstage img { display: block; max-width: 280px; }
+  .croprect { position: absolute; border: 2px solid #2d6b48; background: rgba(45,107,72,0.15); cursor: move; }
+  .crophandle { position: absolute; right: -6px; bottom: -6px; width: 14px; height: 14px;
+                background: #2d6b48; border-radius: 3px; cursor: nwse-resize; }
+
   .topbar { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #ddd; padding-bottom: 12px; }
   .tabs { display: flex; gap: 6px; }
   .tab { background: none; border: 1px solid transparent; border-radius: 6px; padding: 7px 14px; font-size: 14px; color: #555; }
@@ -209,15 +216,28 @@ async function loadPosts() {
         ? `<span class="filterchip">${filterClient.name} only<button onclick="clearQueueFilter()">✕ show all</button></span>`
         : "";
 
+    const isImage = p => p.raw_media && p.raw_media.media_type === "image";
+
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
             <div class="client">${p.clients ? p.clients.name : ""}</div>
             <span class="status ${p.status}">${p.status}</span>
-            ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">trimmed cut</div>` : ""}
+            ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">${isImage(p) ? "cropped" : "trimmed"} cut</div>` : ""}
             ${p.finished_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:2px;">✓ finished — hook text burned in</div>` : ""}
-            ${p.media_url ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:120px; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
+            ${p.media_url && isImage(p) ? `<img id="img-${p.id}" src="${p.media_url}" style="max-width:120px; display:block; margin:8px 0; border-radius:4px;">` : ""}
+            ${p.media_url && !isImage(p) ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:120px; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
             <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
-            ${p.media_url ? `
+
+            ${p.media_url && isImage(p) ? `
+            <div class="cropwrap">
+                <div class="cropstage" id="cropstage-${p.id}">
+                    <img id="cropimg-${p.id}" src="${p.media_url}">
+                    <div class="croprect" id="croprect-${p.id}"><div class="crophandle" id="crophandle-${p.id}"></div></div>
+                </div>
+                <button onclick="cropImage('${p.id}')" style="margin-top:8px;">Crop to this section</button>
+            </div>` : ""}
+
+            ${p.media_url && !isImage(p) ? `
             <div class="trimwrap">
                 <div class="trimtimes" id="trimtimes-${p.id}">Start: 0.0s — End: 0.0s</div>
                 <div class="trimbar" id="trimbar-${p.id}">
@@ -242,8 +262,13 @@ async function loadPosts() {
 
     posts.forEach(p => {
         if (!p.media_url) return;
-        const video = document.getElementById(`video-${p.id}`);
-        video.addEventListener("loadedmetadata", () => initTrimBar(p.id, video.duration));
+        if (isImage(p)) {
+            const img = document.getElementById(`cropimg-${p.id}`);
+            img.addEventListener("load", () => initCropBox(p.id, img.naturalWidth, img.naturalHeight));
+        } else {
+            const video = document.getElementById(`video-${p.id}`);
+            video.addEventListener("loadedmetadata", () => initTrimBar(p.id, video.duration));
+        }
     });
 }
 
@@ -299,6 +324,83 @@ async function trim(postId) {
         body: JSON.stringify({ start: s.start, end: s.end }),
     });
     if (!res.ok) { alert("Trim failed: " + (await res.json()).error); return; }
+    loadPosts();
+}
+
+// The photo equivalent of the video trim bar above. State is kept in the
+// image's NATURAL pixel coordinates (not the small on-screen display size),
+// since that's what ffmpeg's crop filter needs on the backend -- the
+// on-screen box is just that state scaled down for display.
+const cropState = {}; // postId -> { x, y, w, h, naturalWidth, naturalHeight }
+
+function initCropBox(postId, naturalWidth, naturalHeight) {
+    const w = Math.round(naturalWidth * 0.7);
+    const h = Math.round(naturalHeight * 0.7);
+    cropState[postId] = {
+        x: Math.round((naturalWidth - w) / 2),
+        y: Math.round((naturalHeight - h) / 2),
+        w, h, naturalWidth, naturalHeight,
+    };
+    renderCropBox(postId);
+
+    const img = document.getElementById(`cropimg-${postId}`);
+    const rect = document.getElementById(`croprect-${postId}`);
+    const handle = document.getElementById(`crophandle-${postId}`);
+
+    rect.addEventListener("mousedown", (e) => {
+        if (e.target === handle) return; // handle has its own listener below
+        e.preventDefault();
+        const s = cropState[postId];
+        const startX = e.clientX, startY = e.clientY;
+        const origX = s.x, origY = s.y;
+        const scale = img.naturalWidth / img.clientWidth;
+        const onMove = (me) => {
+            s.x = Math.max(0, Math.min(s.naturalWidth - s.w, origX + (me.clientX - startX) * scale));
+            s.y = Math.max(0, Math.min(s.naturalHeight - s.h, origY + (me.clientY - startY) * scale));
+            renderCropBox(postId);
+        };
+        const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+
+    handle.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const s = cropState[postId];
+        const startX = e.clientX, startY = e.clientY;
+        const origW = s.w, origH = s.h;
+        const scale = img.naturalWidth / img.clientWidth;
+        const onMove = (me) => {
+            s.w = Math.max(20, Math.min(s.naturalWidth - s.x, origW + (me.clientX - startX) * scale));
+            s.h = Math.max(20, Math.min(s.naturalHeight - s.y, origH + (me.clientY - startY) * scale));
+            renderCropBox(postId);
+        };
+        const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+}
+
+function renderCropBox(postId) {
+    const s = cropState[postId];
+    const img = document.getElementById(`cropimg-${postId}`);
+    const rect = document.getElementById(`croprect-${postId}`);
+    const scale = img.clientWidth / s.naturalWidth;
+    rect.style.left = `${s.x * scale}px`;
+    rect.style.top = `${s.y * scale}px`;
+    rect.style.width = `${s.w * scale}px`;
+    rect.style.height = `${s.h * scale}px`;
+}
+
+async function cropImage(postId) {
+    const s = cropState[postId];
+    const res = await fetch(`/api/posts/${postId}/crop-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y), w: Math.round(s.w), h: Math.round(s.h) }),
+    });
+    if (!res.ok) { alert("Crop failed: " + (await res.json()).error); return; }
     loadPosts();
 }
 

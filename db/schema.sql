@@ -42,7 +42,7 @@ create table raw_media (
 create table posts (
   id uuid primary key default gen_random_uuid(),
   client_id uuid not null references clients(id) on delete cascade,
-  platform_account_id uuid not null references platform_accounts(id) on delete cascade,
+  platform_account_id uuid references platform_accounts(id) on delete cascade,  -- nullable: a post can exist in review before a platform is connected
   raw_media_id uuid references raw_media(id) on delete set null,
   caption_draft text,                   -- Jarvis's draft
   caption_final text,                   -- what actually gets posted (may equal the draft)

@@ -39,6 +39,7 @@ async function load() {
                 : "<p>(couldn't load media)</p>"}
             <div class="meta">from ${m.sender || "unknown"} — ${new Date(m.received_at).toLocaleString()}</div>
             ${m.caption_raw ? `<div class="caption">${m.caption_raw}</div>` : ""}
+            <button onclick="createPost('${m.id}')" style="margin-top:8px;">Create Post</button>
             <button onclick="del('${m.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
         </div>
     `).join("") : "<p>Nothing here yet.</p>";
@@ -49,6 +50,12 @@ async function del(id) {
     const res = await fetch(`/api/raw-media/${id}`, { method: "DELETE" });
     if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
     load();
+}
+
+async function createPost(id) {
+    const res = await fetch(`/api/raw-media/${id}/create-post`, { method: "POST" });
+    if (!res.ok) { alert("Couldn't create post: " + (await res.json()).error); return; }
+    alert("Added to the Approval Queue.");
 }
 
 load();
