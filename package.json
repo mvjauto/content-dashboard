@@ -1,0 +1,19 @@
+{
+  "name": "content-dashboard",
+  "version": "1.0.0",
+  "description": "Multi-client social media scheduling, approval, and B-roll intake dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "express": "^5.3.0",
+    "express-session": "^1.19.0",
+    "multer": "^2.4.0"
+  }
+}
