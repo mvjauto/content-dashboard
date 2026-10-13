@@ -53,6 +53,8 @@ create table posts (
   external_post_id text,                -- id returned by the platform once published
   approved_by uuid,                     -- references users(id); nullable until approved
   edited_media_path text,               -- the human-trimmed/cropped cut, once one exists
+  finished_media_path text,             -- the trimmed cut with the hook text burned in, once rendered
+  overlay_text text,                    -- the exact on-screen hook line used for the burn-in
   created_at timestamptz not null default now()
 );
 

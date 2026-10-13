@@ -39,8 +39,16 @@ async function load() {
                 : "<p>(couldn't load media)</p>"}
             <div class="meta">from ${m.sender || "unknown"} — ${new Date(m.received_at).toLocaleString()}</div>
             ${m.caption_raw ? `<div class="caption">${m.caption_raw}</div>` : ""}
+            <button onclick="del('${m.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
         </div>
     `).join("") : "<p>Nothing here yet.</p>";
+}
+
+async function del(id) {
+    if (!confirm("Delete this clip for good? This can't be undone.")) return;
+    const res = await fetch(`/api/raw-media/${id}`, { method: "DELETE" });
+    if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
+    load();
 }
 
 load();

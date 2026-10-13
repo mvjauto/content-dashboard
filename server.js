@@ -107,6 +107,28 @@ app.get("/api/clients/:slug/raw-media", requireLogin, async (req, res) => {
     res.json({ client, media: withUrls });
 });
 
+// Deletes a raw B-roll clip for real -- the Storage file and the row both,
+// not just hiding it. Re-checks client access on the row itself (not just
+// trusting the slug in the URL) so a user can't delete footage for a client
+// they aren't actually scoped to.
+app.delete("/api/raw-media/:id", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data: row, error: findErr } = await supabase
+        .from("raw_media").select("*").eq("id", req.params.id).single();
+    if (findErr || !row) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this client" });
+
+    const { error: storageErr } = await supabase.storage.from("raw-media").remove([row.storage_path]);
+    if (storageErr) return res.status(500).json({ error: "couldn't delete file: " + storageErr.message });
+
+    const { error: dbErr } = await supabase.from("raw_media").delete().eq("id", row.id);
+    if (dbErr) return res.status(500).json({ error: "couldn't delete record: " + dbErr.message });
+
+    res.json({ ok: true });
+});
+
 // The approval queue -- nothing here publishes until a human flips it to approved.
 app.get("/api/posts", requireLogin, async (req, res) => {
     const clients = await clientsVisibleTo(req.session.user);
@@ -122,7 +144,7 @@ app.get("/api/posts", requireLogin, async (req, res) => {
     // URL here so the approval card can actually show the footage. Once a
     // post has a human-trimmed cut, that's what shows -- never the raw clip.
     const withUrls = await Promise.all(data.map(async (post) => {
-        const showPath = post.edited_media_path || (post.raw_media && post.raw_media.storage_path);
+        const showPath = post.finished_media_path || post.edited_media_path || (post.raw_media && post.raw_media.storage_path);
         if (!showPath) return post;
         const { data: signed } = await supabase.storage
             .from("raw-media")
@@ -190,6 +212,62 @@ app.post("/api/posts/:id/trim", requireLogin, async (req, res) => {
     await supabase.from("posts").update({ edited_media_path: editedPath }).eq("id", post.id);
 
     const { data: signed } = await supabase.storage.from("raw-media").createSignedUrl(editedPath, 3600);
+    res.json({ ok: true, url: signed ? signed.signedUrl : null });
+});
+
+// Escapes a string for ffmpeg's drawtext filter, which treats \, : and '
+// as control characters in the filter graph syntax -- not shell escaping,
+// this is a different, narrower rule.
+function escapeDrawtext(text) {
+    return text.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\u2019");
+}
+
+const HOOK_FONT = "/System/Library/Fonts/Supplemental/Arial Bold.ttf";
+
+// Burns the hook line onto the clip for real -- the automated step Josh
+// asked for, picking up wherever the human-trim step (above) left off.
+// Operates on edited_media_path if a trim exists, otherwise the raw clip.
+app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
+    const { overlayText } = req.body;
+    if (!overlayText || !overlayText.trim()) return res.status(400).json({ error: "overlayText is required" });
+
+    const { data: post, error: postErr } = await supabase
+        .from("posts").select("*, raw_media(storage_path)").eq("id", req.params.id).single();
+    if (postErr || !post) return res.status(404).json({ error: "post not found" });
+
+    const sourcePath = post.edited_media_path || post.raw_media.storage_path;
+    const { data: fileBlob, error: dlErr } = await supabase.storage.from("raw-media").download(sourcePath);
+    if (dlErr) return res.status(500).json({ error: "couldn't fetch source clip: " + dlErr.message });
+
+    const tmpIn = path.join(os.tmpdir(), `finish-in-${Date.now()}.mp4`);
+    const tmpOut = path.join(os.tmpdir(), `finish-out-${Date.now()}.mp4`);
+    fs.writeFileSync(tmpIn, Buffer.from(await fileBlob.arrayBuffer()));
+
+    // Held for the first 2.5s, matching the reel concepts' "hook, first 2
+    // seconds" spec -- a beat longer so it's actually readable, not a flash.
+    const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(overlayText.trim())}':`
+        + `fontsize=42:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=14:`
+        + `x=(w-text_w)/2:y=h*0.12:enable='lt(t,2.5)'`;
+
+    try {
+        await execFileAsync("ffmpeg", ["-y", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", "-c:a", "aac", tmpOut]);
+    } catch (e) {
+        fs.unlinkSync(tmpIn);
+        return res.status(500).json({ error: "ffmpeg failed: " + e.message });
+    }
+
+    const finishedPath = `${post.client_id}/finished/${post.id}.mp4`;
+    const { error: upErr } = await supabase.storage
+        .from("raw-media").upload(finishedPath, fs.readFileSync(tmpOut), { upsert: true });
+    fs.unlinkSync(tmpIn);
+    fs.unlinkSync(tmpOut);
+    if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+
+    await supabase.from("posts")
+        .update({ finished_media_path: finishedPath, overlay_text: overlayText.trim() })
+        .eq("id", post.id);
+
+    const { data: signed } = await supabase.storage.from("raw-media").createSignedUrl(finishedPath, 3600);
     res.json({ ok: true, url: signed ? signed.signedUrl : null });
 });
 

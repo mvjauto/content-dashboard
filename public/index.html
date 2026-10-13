@@ -6,8 +6,9 @@
 <style>
   body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; color: #222; }
   h1 { font-size: 20px; }
-  section { margin-top: 32px; }
-  #login { max-width: 320px; }
+  h2 { font-size: 17px; }
+  section { margin-top: 24px; }
+  #login { max-width: 320px; margin-top: 60px; }
   input { display: block; width: 100%; margin-bottom: 8px; padding: 8px; box-sizing: border-box; }
   button { padding: 8px 16px; cursor: pointer; }
   .card { border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
@@ -23,6 +24,28 @@
   .trimrange { position: absolute; top: 0; bottom: 0; background: #bbf7d0; }
   .trimhandle { position: absolute; top: -3px; bottom: -3px; width: 14px; margin-left: -7px;
                 background: #2d6b48; border-radius: 4px; cursor: ew-resize; }
+
+  .topbar { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #ddd; padding-bottom: 12px; }
+  .tabs { display: flex; gap: 6px; }
+  .tab { background: none; border: 1px solid transparent; border-radius: 6px; padding: 7px 14px; font-size: 14px; color: #555; }
+  .tab.active { background: #f0f3f1; border-color: #ddd; color: #222; font-weight: 600; }
+  .usermenu { position: relative; }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; background: #2d6b48; color: white;
+            display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600;
+            cursor: pointer; }
+  .usermenu-dropdown { position: absolute; right: 0; top: 44px; background: white; border: 1px solid #ddd;
+                        border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.08); min-width: 200px; z-index: 10; }
+  .usermenu-dropdown .who { padding: 10px 14px; font-size: 13px; color: #888; border-bottom: 1px solid #eee; }
+  .usermenu-dropdown .company-opt { display: block; width: 100%; text-align: left; background: none; border: none;
+                                     padding: 8px 14px; font-size: 13px; cursor: pointer; }
+  .usermenu-dropdown .company-opt.active { font-weight: 600; color: #2d6b48; }
+  .usermenu-dropdown .company-opt:hover { background: #f7f7f7; }
+  .usermenu-dropdown hr { border: none; border-top: 1px solid #eee; margin: 4px 0; }
+  .usermenu-dropdown button.signout { width: 100%; text-align: left; background: none; border: none; padding: 10px 14px;
+                                       font-size: 13px; cursor: pointer; color: #c0392b; }
+  .homecard { display: inline-block; border: 1px solid #ddd; border-radius: 8px; padding: 16px 22px; margin-right: 12px; cursor: pointer; }
+  .homecard .num { font-size: 26px; font-weight: 700; color: #2d6b48; }
+  .homecard .label { font-size: 12px; color: #888; }
 </style>
 </head>
 <body>
@@ -36,16 +59,41 @@
 </div>
 
 <div id="app">
-  <h1>Content Dashboard</h1>
-  <p id="whoami"></p>
-  <button onclick="logout()">Sign out</button>
+  <div class="topbar">
+    <div class="tabs">
+      <button class="tab" id="tab-home" onclick="showTab('home')">Home</button>
+      <button class="tab" id="tab-queue" onclick="showTab('queue')">Approval Queue</button>
+      <button class="tab" id="tab-broll" onclick="showTab('broll')">B-Roll</button>
+    </div>
+    <div class="usermenu">
+      <div class="avatar" id="avatar" onclick="toggleUserMenu()"></div>
+      <div class="usermenu-dropdown" id="usermenu-dropdown" style="display:none;">
+        <div class="who" id="who"></div>
+        <div id="companySwitcher"></div>
+        <hr>
+        <button class="signout" onclick="logout()">Sign out</button>
+      </div>
+    </div>
+  </div>
 
-  <section>
+  <section id="section-home">
+    <h2>Content Dashboard</h2>
+    <div class="homecard" onclick="showTab('queue')">
+      <div class="num" id="homeQueueCount">—</div>
+      <div class="label">need review</div>
+    </div>
+    <div class="homecard" onclick="showTab('broll')">
+      <div class="num" id="homeBrollCount">—</div>
+      <div class="label">raw clips in the bin</div>
+    </div>
+  </section>
+
+  <section id="section-queue" style="display:none;">
     <h2>Approval queue</h2>
     <div id="posts"></div>
   </section>
 
-  <section>
+  <section id="section-broll" style="display:none;">
     <h2>Raw footage (B-roll)</h2>
     <p style="color:#888; font-size:13px;">Broken out per client — as admin you see all of them.</p>
     <div id="rawMedia"></div>
@@ -53,6 +101,10 @@
 </div>
 
 <script>
+let me = null;
+let myClients = [];
+let activeClientSlug = null; // null = all companies
+
 async function login() {
     const email = document.getElementById("email").value;
     const password = document.getElementById("password").value;
@@ -74,19 +126,66 @@ async function logout() {
     document.getElementById("login").style.display = "block";
 }
 
+function initials(name) {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function toggleUserMenu() {
+    const el = document.getElementById("usermenu-dropdown");
+    el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+function renderCompanySwitcher() {
+    const el = document.getElementById("companySwitcher");
+    if (myClients.length <= 1) { el.innerHTML = ""; return; }
+    const opts = [{ slug: null, name: "All companies" }, ...myClients];
+    el.innerHTML = opts.map(c => `
+        <button class="company-opt ${activeClientSlug === c.slug ? "active" : ""}" onclick="switchCompany(${c.slug ? `'${c.slug}'` : "null"})">${c.name}</button>
+    `).join("");
+}
+
+function switchCompany(slug) {
+    activeClientSlug = slug;
+    toggleUserMenu();
+    renderCompanySwitcher();
+    loadPosts();
+    loadRawMedia();
+}
+
+function showTab(tab) {
+    ["home", "queue", "broll"].forEach(t => {
+        document.getElementById(`section-${t}`).style.display = t === tab ? "block" : "none";
+        document.getElementById(`tab-${t}`).classList.toggle("active", t === tab);
+    });
+}
+
 async function showApp() {
     document.getElementById("login").style.display = "none";
     document.getElementById("app").style.display = "block";
-    const me = await (await fetch("/api/me")).json();
-    document.getElementById("whoami").textContent = `Signed in as ${me.name} (${me.role})`;
+    me = await (await fetch("/api/me")).json();
+    myClients = await (await fetch("/api/clients")).json();
+    document.getElementById("avatar").textContent = initials(me.name);
+    document.getElementById("who").textContent = `${me.name} (${me.role})`;
+    renderCompanySwitcher();
+    showTab("home");
     loadPosts();
     loadRawMedia();
+}
+
+function visiblePosts(posts) {
+    if (!activeClientSlug) return posts;
+    const client = myClients.find(c => c.slug === activeClientSlug);
+    return client ? posts.filter(p => p.client_id === client.id) : posts;
 }
 
 const trimState = {}; // postId -> { start, end, duration }
 
 async function loadPosts() {
-    const posts = await (await fetch("/api/posts")).json();
+    const all = await (await fetch("/api/posts")).json();
+    const posts = visiblePosts(all);
+    document.getElementById("homeQueueCount").textContent = posts.filter(p => p.status === "needs_review").length;
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
             <span class="status ${p.status}">${p.status}</span>
@@ -170,7 +269,9 @@ async function trim(postId) {
 }
 
 async function loadRawMedia() {
-    const counts = await (await fetch("/api/raw-media")).json();
+    const all = await (await fetch("/api/raw-media")).json();
+    const counts = activeClientSlug ? all.filter(c => c.slug === activeClientSlug) : all;
+    document.getElementById("homeBrollCount").textContent = counts.reduce((sum, c) => sum + c.count, 0);
     document.getElementById("rawMedia").innerHTML = counts.length ? counts.map(c => `
         <a class="card" style="display:block; text-decoration:none; color:inherit;" href="/client.html?slug=${c.slug}">
             <strong>${c.name}</strong> — ${c.count} clip${c.count === 1 ? "" : "s"}
