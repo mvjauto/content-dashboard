@@ -270,9 +270,21 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     const tmpOut = path.join(os.tmpdir(), `finish-out-${Date.now()}.mp4`);
     fs.writeFileSync(tmpIn, Buffer.from(await fileBlob.arrayBuffer()));
 
+    // Phone video frequently carries a rotation tag (e.g. shot in portrait,
+    // stored as landscape pixels with rotate=-90) -- ffmpeg auto-rotates on
+    // decode, so drawtext actually draws onto the DISPLAYED frame, not the
+    // coded one. Reading just stream=width here was the root cause of the
+    // real overflow bug: a 1024x576-coded, rotate=-90 clip displays at
+    // 576 wide, but the naive probe reported 1024 and sized text for that.
     const { stdout: probeOut } = await execFileAsync("/opt/homebrew/opt/ffmpeg-full/bin/ffprobe",
-        ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width", "-of", "csv=p=0", tmpIn]);
-    const width = parseInt(probeOut.trim(), 10) || 1080;
+        ["-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height:stream_side_data=rotation",
+         "-of", "json", tmpIn]);
+    const probeData = JSON.parse(probeOut);
+    const stream = probeData.streams[0];
+    const rotation = stream.side_data_list && stream.side_data_list[0] ? stream.side_data_list[0].rotation : 0;
+    const rotated90 = Math.abs(rotation) === 90 || Math.abs(rotation) === 270;
+    const width = (rotated90 ? stream.height : stream.width) || 1080;
 
     const fontsize = Math.max(22, Math.min(48, Math.round(width / 16)));
     const maxChars = Math.floor(width / (fontsize * 0.58));
