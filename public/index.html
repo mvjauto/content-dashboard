@@ -91,7 +91,7 @@ async function loadPosts() {
         <div class="card">
             <span class="status ${p.status}">${p.status}</span>
             ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">trimmed cut</div>` : ""}
-            ${p.media_url ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:50%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
+            ${p.media_url ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:120px; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
             <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
             ${p.media_url ? `
             <div class="trimwrap">
