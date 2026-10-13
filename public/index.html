@@ -41,6 +41,7 @@
 
   <section>
     <h2>Raw footage (B-roll)</h2>
+    <p style="color:#888; font-size:13px;">Broken out per client — as admin you see all of them.</p>
     <div id="rawMedia"></div>
   </section>
 </div>
@@ -88,13 +89,12 @@ async function loadPosts() {
 }
 
 async function loadRawMedia() {
-    const media = await (await fetch("/api/raw-media")).json();
-    document.getElementById("rawMedia").innerHTML = media.length ? media.map(m => `
-        <div class="card">
-            <div class="client">${m.media_type} — from ${m.sender || "unknown"}</div>
-            <p>${m.caption_raw || "(no caption)"}</p>
-        </div>
-    `).join("") : "<p>Nothing in the bin yet.</p>";
+    const counts = await (await fetch("/api/raw-media")).json();
+    document.getElementById("rawMedia").innerHTML = counts.length ? counts.map(c => `
+        <a class="card" style="display:block; text-decoration:none; color:inherit;" href="/client.html?slug=${c.slug}">
+            <strong>${c.name}</strong> — ${c.count} clip${c.count === 1 ? "" : "s"}
+        </a>
+    `).join("") : "<p>Nothing in any bin yet.</p>";
 }
 
 async function approve(id) {

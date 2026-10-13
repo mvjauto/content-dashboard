@@ -58,17 +58,48 @@ app.get("/api/clients", requireLogin, async (req, res) => {
 });
 
 // Raw B-roll waiting for someone to turn it into a post, scoped to clients
-// this user can actually see.
+// this user can actually see. Lightweight -- just how many per client, for
+// the clickable client cards on the main page; the full list with playable
+// video lives behind /api/clients/:slug/raw-media below.
 app.get("/api/raw-media", requireLogin, async (req, res) => {
     const clients = await clientsVisibleTo(req.session.user);
     const clientIds = clients.map(c => c.id);
     const { data, error } = await supabase
         .from("raw_media")
+        .select("client_id, clients(name, slug)")
+        .in("client_id", clientIds);
+    if (error) return res.status(500).json({ error: error.message });
+    const counts = {};
+    for (const row of data) {
+        const slug = row.clients.slug;
+        if (!counts[slug]) counts[slug] = { slug, name: row.clients.name, count: 0 };
+        counts[slug].count++;
+    }
+    res.json(Object.values(counts));
+});
+
+// Full B-roll list for one client, with a signed URL per item so the video
+// is actually playable -- the bucket is private, so a bare storage_path
+// isn't a usable link on its own.
+app.get("/api/clients/:slug/raw-media", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const client = clients.find(c => c.slug === req.params.slug);
+    if (!client) return res.status(403).json({ error: "no access to this client" });
+
+    const { data, error } = await supabase
+        .from("raw_media")
         .select("*")
-        .in("client_id", clientIds)
+        .eq("client_id", client.id)
         .order("received_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
+
+    const withUrls = await Promise.all(data.map(async (row) => {
+        const { data: signed } = await supabase.storage
+            .from("raw-media")
+            .createSignedUrl(row.storage_path, 3600);
+        return { ...row, url: signed ? signed.signedUrl : null };
+    }));
+    res.json({ client, media: withUrls });
 });
 
 // The approval queue -- nothing here publishes until a human flips it to approved.

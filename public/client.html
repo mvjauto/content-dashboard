@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Raw Footage — Content Dashboard</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; color: #222; }
+  a.back { font-size: 13px; color: #555; text-decoration: none; }
+  h1 { font-size: 20px; margin-top: 12px; }
+  .card { border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 14px; }
+  .card video, .card img { max-width: 100%; border-radius: 4px; display: block; margin-bottom: 8px; }
+  .meta { font-size: 12px; color: #888; }
+  .caption { margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<a class="back" href="/">&larr; All clients</a>
+<h1 id="title">Raw footage</h1>
+<div id="media"></div>
+
+<script>
+const slug = new URLSearchParams(location.search).get("slug");
+
+async function load() {
+    const res = await fetch(`/api/clients/${slug}/raw-media`);
+    if (!res.ok) {
+        document.getElementById("media").textContent = "No access, or not signed in.";
+        return;
+    }
+    const { client, media } = await res.json();
+    document.getElementById("title").textContent = `${client.name} — Raw footage (${media.length})`;
+    document.getElementById("media").innerHTML = media.length ? media.map(m => `
+        <div class="card">
+            ${m.url
+                ? (m.media_type === "video"
+                    ? `<video src="${m.url}" controls></video>`
+                    : `<img src="${m.url}">`)
+                : "<p>(couldn't load media)</p>"}
+            <div class="meta">from ${m.sender || "unknown"} — ${new Date(m.received_at).toLocaleString()}</div>
+            ${m.caption_raw ? `<div class="caption">${m.caption_raw}</div>` : ""}
+        </div>
+    `).join("") : "<p>Nothing here yet.</p>";
+}
+
+load();
+</script>
+
+</body>
+</html>
