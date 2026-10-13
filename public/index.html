@@ -43,9 +43,13 @@
   .usermenu-dropdown hr { border: none; border-top: 1px solid #eee; margin: 4px 0; }
   .usermenu-dropdown button.signout { width: 100%; text-align: left; background: none; border: none; padding: 10px 14px;
                                        font-size: 13px; cursor: pointer; color: #c0392b; }
-  .homecard { display: inline-block; border: 1px solid #ddd; border-radius: 8px; padding: 16px 22px; margin-right: 12px; cursor: pointer; }
-  .homecard .num { font-size: 26px; font-weight: 700; color: #2d6b48; }
-  .homecard .label { font-size: 12px; color: #888; }
+  .companyrow { display: flex; align-items: center; justify-content: space-between; border: 1px solid #ddd;
+                border-radius: 8px; padding: 14px 18px; margin-bottom: 10px; cursor: pointer; }
+  .companyrow:hover { background: #f7f7f7; }
+  .companyrow .name { font-weight: 600; }
+  .companyrow .stats { display: flex; gap: 22px; font-size: 13px; color: #555; }
+  .companyrow .stats .num { font-weight: 700; color: #2d6b48; font-size: 16px; display: block; }
+  .companyrow .inactive { color: #bbb; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -78,15 +82,8 @@
   </div>
 
   <section id="section-home">
-    <h2>Content Dashboard</h2>
-    <div class="homecard" onclick="showTab('queue')">
-      <div class="num" id="homeQueueCount">—</div>
-      <div class="label">need review</div>
-    </div>
-    <div class="homecard" onclick="showTab('broll')">
-      <div class="num" id="homeBrollCount">—</div>
-      <div class="label">raw clips in the bin</div>
-    </div>
+    <h2>All companies</h2>
+    <div id="homeCompanies"></div>
   </section>
 
   <section id="section-queue" style="display:none;">
@@ -180,8 +177,33 @@ async function showApp() {
     renderCompanySwitcher();
     renderCompanyLabel();
     showTab("home");
+    loadHomeCompanies();
     loadPosts();
     loadRawMedia();
+}
+
+// The admin view: every company at once, not filtered to whichever one is
+// "active" -- that filter only matters once you're inside Queue or B-Roll.
+async function loadHomeCompanies() {
+    const [allPosts, brollCounts] = await Promise.all([
+        fetch("/api/posts").then(r => r.json()),
+        fetch("/api/raw-media").then(r => r.json()),
+    ]);
+    document.getElementById("homeCompanies").innerHTML = myClients.map(c => {
+        const needsReview = allPosts.filter(p => p.client_id === c.id && p.status === "needs_review").length;
+        const broll = brollCounts.find(b => b.slug === c.slug);
+        return `
+        <div class="companyrow" onclick="switchCompany('${c.slug}'); showTab('queue');">
+            <div>
+                <div class="name">${c.name}</div>
+                ${!c.active ? `<div class="inactive">not yet operating</div>` : ""}
+            </div>
+            <div class="stats">
+                <div><span class="num">${needsReview}</span>need review</div>
+                <div><span class="num">${broll ? broll.count : 0}</span>raw clips</div>
+            </div>
+        </div>`;
+    }).join("");
 }
 
 function visiblePosts(posts) {
@@ -195,7 +217,6 @@ const trimState = {}; // postId -> { start, end, duration }
 async function loadPosts() {
     const all = await (await fetch("/api/posts")).json();
     const posts = visiblePosts(all);
-    document.getElementById("homeQueueCount").textContent = posts.filter(p => p.status === "needs_review").length;
     document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
         <div class="card">
             <span class="status ${p.status}">${p.status}</span>
@@ -281,7 +302,6 @@ async function trim(postId) {
 async function loadRawMedia() {
     const all = await (await fetch("/api/raw-media")).json();
     const counts = activeClientSlug ? all.filter(c => c.slug === activeClientSlug) : all;
-    document.getElementById("homeBrollCount").textContent = counts.reduce((sum, c) => sum + c.count, 0);
     document.getElementById("rawMedia").innerHTML = counts.length ? counts.map(c => `
         <a class="card" style="display:block; text-decoration:none; color:inherit;" href="/client.html?slug=${c.slug}">
             <strong>${c.name}</strong> — ${c.count} clip${c.count === 1 ? "" : "s"}
