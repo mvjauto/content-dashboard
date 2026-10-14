@@ -151,7 +151,7 @@
     <h2>Concepts</h2>
     <p style="color:#888; font-size:13px;">Hook ideas and video concepts, per company. Type one, or hit record and just talk through it.</p>
     <label style="font-size:13px; display:block; margin-bottom:6px;">Company:
-      <select id="conceptClientSelect" style="padding:5px;"></select>
+      <select id="conceptClientSelect" style="padding:5px;" onchange="loadConcepts()"></select>
     </label>
     <textarea id="conceptText" rows="2" style="width:100%; max-width:500px; padding:8px; box-sizing:border-box; font-family:inherit;" placeholder="e.g. Burst water main shooting into the air, crew responding in under an hour"></textarea>
     <div style="margin-top:6px;">
@@ -748,23 +748,41 @@ function selectedConceptClientId() {
 
 async function loadConcepts() {
     renderConceptClientSelect();
-    const concepts = await (await fetch("/api/concepts")).json();
+    const selectedSlug = document.getElementById("conceptClientSelect").value;
+    const all = await (await fetch("/api/concepts")).json();
+    const concepts = selectedSlug ? all.filter(c => c.clients && c.clients.slug === selectedSlug) : all;
     document.getElementById("concepts").innerHTML = concepts.length ? concepts.map(c => `
         <div class="card">
             <div class="client">${c.clients ? c.clients.name : ""}</div>
-            <p style="white-space:pre-wrap;">${c.text}</p>
+            <textarea id="conceptEdit-${c.id}" rows="2" style="width:100%; max-width:500px; padding:8px; box-sizing:border-box; font-family:inherit; white-space:pre-wrap;">${c.text}</textarea>
+            <button onclick="saveConceptText('${c.id}')" style="margin-top:4px;">Save edit</button>
             ${c.url
-                ? `<video src="${c.url}" controls style="max-width:220px; display:block; margin:8px 0;"></video>
-                   <div class="meta">video attached (${c.matched_video_source})</div>`
+                ? `${c.matched_media_type === "image"
+                    ? `<img src="${c.url}" style="max-width:220px; display:block; margin:8px 0;">`
+                    : `<video src="${c.url}" controls style="max-width:220px; display:block; margin:8px 0;"></video>`}
+                   <div class="meta">attached (${c.matched_video_source})</div>`
                 : `<div style="margin-top:8px;">
                     <input type="file" accept="video/*" id="conceptVideoFile-${c.id}" style="display:block; margin-bottom:6px;">
                     <button onclick="uploadConceptVideo('${c.id}')">Upload video for this</button>
                     <button onclick="findFootage('${c.id}')" style="margin-left:6px;">Find footage online</button>
+                    <a href="/client.html?slug=${c.clients ? c.clients.slug : ''}&attachToConcept=${c.id}" style="margin-left:6px; font-size:13px;">Find video in B-Roll</a>
                    </div>`}
             <div id="conceptMsg-${c.id}" style="font-size:12px; margin-top:6px;"></div>
             <button onclick="deleteConcept('${c.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
         </div>
-    `).join("") : "<p>No concepts yet for this view.</p>";
+    `).join("") : "<p>Nothing here yet for this company.</p>";
+}
+
+async function saveConceptText(id) {
+    const text = document.getElementById(`conceptEdit-${id}`).value.trim();
+    if (!text) { alert("Can't save an empty concept -- delete it instead if you want it gone."); return; }
+    const res = await fetch(`/api/concepts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+    });
+    if (!res.ok) { alert("Couldn't save: " + (await res.json()).error); return; }
+    document.getElementById(`conceptMsg-${id}`).textContent = "Saved.";
 }
 
 async function addConceptText() {

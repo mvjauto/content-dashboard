@@ -710,7 +710,47 @@ app.post("/api/concepts/:id/upload-video", requireLogin, conceptUpload.single("f
     if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
 
     const { error: dbErr } = await supabase.from("concepts")
-        .update({ matched_video_path: storagePath, matched_video_source: "upload" })
+        .update({ matched_video_path: storagePath, matched_media_type: "video", matched_video_source: "upload" })
+        .eq("id", concept.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true });
+});
+
+// Attaches an existing B-roll clip (already sitting in raw_media from
+// WhatsApp intake) to a concept instead of uploading something new. Copies
+// the file into concept-media rather than just pointing at raw_media's
+// path, same reasoning as everywhere else in this build: if the original
+// raw_media item later gets deleted, the concept's copy is unaffected.
+app.post("/api/concepts/:id/attach-raw-media", requireLogin, async (req, res) => {
+    const { rawMediaId } = req.body;
+    if (!rawMediaId) return res.status(400).json({ error: "rawMediaId required" });
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data: concept, error: cErr } = await supabase
+        .from("concepts").select("*").eq("id", req.params.id).single();
+    if (cErr || !concept) return res.status(404).json({ error: "concept not found" });
+    if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const { data: raw, error: rErr } = await supabase
+        .from("raw_media").select("*").eq("id", rawMediaId).single();
+    if (rErr || !raw) return res.status(404).json({ error: "raw media not found" });
+    if (raw.client_id !== concept.client_id) return res.status(400).json({ error: "that clip belongs to a different company than this concept" });
+
+    const { data: fileBlob, error: dlErr } = await supabase.storage.from("raw-media").download(raw.storage_path);
+    if (dlErr) return res.status(500).json({ error: "couldn't pull the clip: " + dlErr.message });
+
+    const ext = path.extname(raw.storage_path) || (raw.media_type === "video" ? ".mp4" : ".jpg");
+    const storagePath = `${concept.id}-${Date.now()}${ext}`;
+    const buffer = Buffer.from(await fileBlob.arrayBuffer());
+    const { error: upErr } = await supabase.storage
+        .from("concept-media").upload(storagePath, buffer, { contentType: fileBlob.type, upsert: true });
+    if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+
+    const { error: dbErr } = await supabase.from("concepts")
+        .update({ matched_video_path: storagePath, matched_media_type: raw.media_type, matched_video_source: "raw-media" })
         .eq("id", concept.id);
     if (dbErr) return res.status(500).json({ error: dbErr.message });
 
@@ -723,6 +763,22 @@ app.post("/api/concepts/:id/upload-video", requireLogin, conceptUpload.single("f
 // instead of silently doing nothing, so the UI can say exactly what's wrong.
 app.post("/api/concepts/:id/find-footage", requireLogin, async (req, res) => {
     res.status(501).json({ error: "Stock footage search isn't connected yet -- needs a free Pixabay API key, which needs a real human to sign up (their form blocks automated signups). Upload a video directly for now." });
+});
+
+app.put("/api/concepts/:id", requireLogin, async (req, res) => {
+    const text = (req.body.text || "").trim();
+    if (!text) return res.status(400).json({ error: "text can't be empty" });
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: concept, error: findErr } = await supabase
+        .from("concepts").select("*").eq("id", req.params.id).single();
+    if (findErr || !concept) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const { error: dbErr } = await supabase.from("concepts").update({ text }).eq("id", concept.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+    res.json({ ok: true });
 });
 
 app.delete("/api/concepts/:id", requireLogin, async (req, res) => {

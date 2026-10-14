@@ -102,6 +102,22 @@ create table example_media (
   uploaded_at timestamptz not null default now()
 );
 
+-- Hook/video ideas, scoped per company (same reasoning as example_media --
+-- a concept for one client isn't relevant to another). Gets a video attached
+-- three possible ways: Josh uploads one directly, Jarvis attaches an
+-- existing B-roll clip from raw_media, or (once a stock-footage key exists)
+-- Jarvis searches Pixabay and Josh picks a result.
+create table concepts (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references clients(id) on delete cascade,
+  text text not null,
+  created_by uuid references users(id),
+  matched_video_path text,              -- path in the "concept-media" bucket
+  matched_media_type text check (matched_media_type in ('video','image') or matched_media_type is null),
+  matched_video_source text check (matched_video_source in ('pexels','pixabay','upload','raw-media') or matched_video_source is null),
+  created_at timestamptz not null default now()
+);
+
 insert into clients (slug, name, active) values
   ('811-assist', '811 Assist', true),
   ('axion-pept', 'Axion Pept', true),

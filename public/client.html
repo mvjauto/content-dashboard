@@ -47,10 +47,14 @@
 </div>
 
 <h1 id="title">Raw footage</h1>
+<div id="attachBanner" style="display:none; padding:10px 14px; background:#fff6e0; border:1px solid #f0dca0; border-radius:6px; margin-bottom:14px; font-size:14px;">
+  Picking footage for a concept — click "Attach to concept" on whichever clip fits, or <a href="/">go back</a> without picking anything.
+</div>
 <div id="media"></div>
 
 <script>
 const slug = new URLSearchParams(location.search).get("slug");
+const attachToConcept = new URLSearchParams(location.search).get("attachToConcept");
 
 function goHome() { location.href = "/"; }
 function goQueue() { location.href = `/?queue=${slug}`; }
@@ -87,6 +91,7 @@ async function load() {
     }
     const { client, media } = await res.json();
     document.getElementById("title").textContent = `${client.name} — Raw footage (${media.length})`;
+    if (attachToConcept) document.getElementById("attachBanner").style.display = "block";
     document.getElementById("media").innerHTML = media.length ? media.map(m => `
         <div class="card">
             ${m.url
@@ -96,8 +101,10 @@ async function load() {
                 : "<p>(couldn't load media)</p>"}
             <div class="meta">from ${m.sender || "unknown"} — ${new Date(m.received_at).toLocaleString()}</div>
             ${m.caption_raw ? `<div class="caption">${m.caption_raw}</div>` : ""}
-            <button onclick="createPost('${m.id}')" style="margin-top:8px;">Create Post</button>
-            <button onclick="del('${m.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
+            ${attachToConcept
+                ? `<button onclick="attachClip('${m.id}')" style="margin-top:8px;">Attach to concept</button>`
+                : `<button onclick="createPost('${m.id}')" style="margin-top:8px;">Create Post</button>
+                   <button onclick="del('${m.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>`}
         </div>
     `).join("") : "<p>Nothing here yet.</p>";
 }
@@ -107,6 +114,16 @@ async function del(id) {
     const res = await fetch(`/api/raw-media/${id}`, { method: "DELETE" });
     if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
     load();
+}
+
+async function attachClip(rawMediaId) {
+    const res = await fetch(`/api/concepts/${attachToConcept}/attach-raw-media`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rawMediaId }),
+    });
+    if (!res.ok) { alert("Couldn't attach: " + (await res.json()).error); return; }
+    location.href = "/?tab=concepts";
 }
 
 async function createPost(id) {
