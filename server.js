@@ -657,23 +657,24 @@ app.post("/api/concepts", requireLogin, async (req, res) => {
 });
 
 // Record-and-transcribe: Josh talks instead of typing. Audio never gets
-// stored -- it's piped straight to the same local Whisper model the
-// WhatsApp bot already uses, turned into text, then discarded.
-// Shared by /api/concepts/record and /api/transcribe-only below -- same
-// local Whisper model the WhatsApp bot uses, audio never gets stored.
+// Shared by /api/concepts/record and /api/transcribe-only below. Runs
+// through OpenAI's hosted Whisper API, not a local model -- the local
+// mlx-whisper path (same one the WhatsApp bot uses) only exists on Josh's
+// own Mac, so it hard-failed for anyone using the deployed site from
+// anywhere else (confirmed with a real test against production: ENOENT).
+// Audio is sent for transcription only, never written to Storage or kept.
 async function transcribeAudioBuffer(buffer) {
-    const tmpPath = path.join(os.tmpdir(), `rec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.webm`);
-    fs.writeFileSync(tmpPath, buffer);
-    try {
-        const { stdout } = await execFileAsync(
-            "/Users/h/my-agent/backtalk/.venv/bin/python3",
-            ["/Users/h/my-agent/whatsapp-bot/transcribe.py", tmpPath],
-            { encoding: "utf8", maxBuffer: 5 * 1024 * 1024, timeout: 60000 }
-        );
-        return JSON.parse(stdout.trim().split("\n").pop()).text;
-    } finally {
-        fs.unlinkSync(tmpPath);
-    }
+    const form = new FormData();
+    form.append("file", new Blob([buffer]), "recording.webm");
+    form.append("model", "whisper-1");
+    const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: form,
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message);
+    return data.text;
 }
 
 app.post("/api/concepts/record", requireLogin, conceptUpload.single("file"), async (req, res) => {
