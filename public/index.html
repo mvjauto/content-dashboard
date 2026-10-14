@@ -179,6 +179,10 @@ async function login() {
         document.getElementById("err").textContent = "Wrong email or password.";
         return;
     }
+    // A fresh login should always land on Home, regardless of whatever tab
+    // was sitting in the address bar from before you logged out -- clear it
+    // first so showApp()'s URL-based tab restore doesn't kick in here.
+    history.replaceState(null, "", "/");
     showApp();
 }
 
