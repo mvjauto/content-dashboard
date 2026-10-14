@@ -764,8 +764,13 @@ async function loadConcepts() {
                 : `<div style="margin-top:8px;">
                     <input type="file" accept="video/*" id="conceptVideoFile-${c.id}" style="display:block; margin-bottom:6px;">
                     <button onclick="uploadConceptVideo('${c.id}')">Upload video for this</button>
-                    <button onclick="findFootage('${c.id}')" style="margin-left:6px;">Find footage online</button>
                     <a href="/client.html?slug=${c.clients ? c.clients.slug : ''}&attachToConcept=${c.id}" style="margin-left:6px; font-size:13px;">Find video in B-Roll</a>
+                   </div>
+                   <div style="margin-top:8px; padding-top:8px; border-top:1px dashed #ddd;">
+                    <input type="text" id="footageQuery-${c.id}" placeholder="What should the footage show? (leave blank to let Jarvis figure it out from the concept)" style="font-size:13px; width:100%; max-width:400px;">
+                    <button onclick="findFootage('${c.id}')" style="margin-top:4px;">Search stock footage</button>
+                    <button id="footageRecordBtn-${c.id}" onclick="toggleFootageRecording('${c.id}')" style="margin-top:4px; margin-left:4px;">🎤</button>
+                    <div id="footageResults-${c.id}" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
                    </div>`}
             <div id="conceptMsg-${c.id}" style="font-size:12px; margin-top:6px;"></div>
             <button onclick="deleteConcept('${c.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
@@ -857,10 +862,79 @@ async function uploadConceptVideo(conceptId) {
     loadConcepts();
 }
 
-async function findFootage(conceptId) {
-    const res = await fetch(`/api/concepts/${conceptId}/find-footage`, { method: "POST" });
+async function findFootage(conceptId, queryOverride) {
+    const query = queryOverride !== undefined ? queryOverride : document.getElementById(`footageQuery-${conceptId}`).value.trim();
+    const msg = document.getElementById(`conceptMsg-${conceptId}`);
+    msg.textContent = "Searching...";
+    const res = await fetch(`/api/concepts/${conceptId}/find-footage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+    });
     const data = await res.json();
-    document.getElementById(`conceptMsg-${conceptId}`).textContent = data.error || "No results.";
+    if (!res.ok) { msg.textContent = data.error; return; }
+    msg.textContent = data.results.length ? `Searched: "${data.query}"` : `No results for "${data.query}".`;
+    document.getElementById(`footageResults-${conceptId}`).innerHTML = data.results.map(r => `
+        <div style="width:110px;">
+            <img src="${r.thumbnail}" style="width:110px; display:block; border-radius:4px; cursor:pointer;" onclick="pickFootage('${conceptId}', ${r.id}, '${r.downloadUrl}')">
+            <button onclick="pickFootage('${conceptId}', ${r.id}, '${r.downloadUrl}')" style="width:100%; font-size:11px; margin-top:2px;">Use this</button>
+        </div>
+    `).join("");
+}
+
+async function pickFootage(conceptId, pixabayId, downloadUrl) {
+    const msg = document.getElementById(`conceptMsg-${conceptId}`);
+    msg.textContent = "Downloading and attaching...";
+    const res = await fetch(`/api/concepts/${conceptId}/pick-footage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ downloadUrl, pixabayId }),
+    });
+    if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
+    loadConcepts();
+}
+
+let footageRecorder = null;
+let footageChunks = [];
+
+async function toggleFootageRecording(conceptId) {
+    const btn = document.getElementById(`footageRecordBtn-${conceptId}`);
+    const msg = document.getElementById(`conceptMsg-${conceptId}`);
+
+    if (footageRecorder && footageRecorder.state === "recording") {
+        footageRecorder.stop();
+        return;
+    }
+
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+        msg.textContent = "Mic access denied or unavailable.";
+        return;
+    }
+
+    footageChunks = [];
+    footageRecorder = new MediaRecorder(stream);
+    footageRecorder.ondataavailable = (e) => { if (e.data.size > 0) footageChunks.push(e.data); };
+    footageRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        btn.textContent = "🎤";
+        msg.textContent = "Transcribing...";
+
+        const blob = new Blob(footageChunks, { type: "audio/webm" });
+        const form = new FormData();
+        form.append("file", blob, "recording.webm");
+        const res = await fetch("/api/transcribe-only", { method: "POST", body: form });
+        if (!res.ok) { msg.textContent = "Transcription failed: " + (await res.json()).error; return; }
+        const { text } = await res.json();
+        document.getElementById(`footageQuery-${conceptId}`).value = text;
+        findFootage(conceptId, text);
+    };
+
+    footageRecorder.start();
+    btn.textContent = "⏹";
+    msg.textContent = "Recording...";
 }
 
 async function deleteConcept(id) {

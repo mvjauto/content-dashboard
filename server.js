@@ -659,27 +659,34 @@ app.post("/api/concepts", requireLogin, async (req, res) => {
 // Record-and-transcribe: Josh talks instead of typing. Audio never gets
 // stored -- it's piped straight to the same local Whisper model the
 // WhatsApp bot already uses, turned into text, then discarded.
-app.post("/api/concepts/record", requireLogin, conceptUpload.single("file"), async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: "no audio uploaded" });
-    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
-    if (!client) return res.status(400).json({ error: "pick a valid company" });
-
-    const tmpPath = path.join(os.tmpdir(), `concept-rec-${Date.now()}.webm`);
-    fs.writeFileSync(tmpPath, req.file.buffer);
-
-    let text;
+// Shared by /api/concepts/record and /api/transcribe-only below -- same
+// local Whisper model the WhatsApp bot uses, audio never gets stored.
+async function transcribeAudioBuffer(buffer) {
+    const tmpPath = path.join(os.tmpdir(), `rec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.webm`);
+    fs.writeFileSync(tmpPath, buffer);
     try {
         const { stdout } = await execFileAsync(
             "/Users/h/my-agent/backtalk/.venv/bin/python3",
             ["/Users/h/my-agent/whatsapp-bot/transcribe.py", tmpPath],
             { encoding: "utf8", maxBuffer: 5 * 1024 * 1024, timeout: 60000 }
         );
-        text = JSON.parse(stdout.trim().split("\n").pop()).text;
-    } catch (e) {
+        return JSON.parse(stdout.trim().split("\n").pop()).text;
+    } finally {
         fs.unlinkSync(tmpPath);
+    }
+}
+
+app.post("/api/concepts/record", requireLogin, conceptUpload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "no audio uploaded" });
+    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
+    if (!client) return res.status(400).json({ error: "pick a valid company" });
+
+    let text;
+    try {
+        text = await transcribeAudioBuffer(req.file.buffer);
+    } catch (e) {
         return res.status(500).json({ error: "transcription failed: " + e.message });
     }
-    fs.unlinkSync(tmpPath);
     if (!text || !text.trim()) return res.status(400).json({ error: "couldn't make out any speech in that recording" });
 
     const { data: row, error: dbErr } = await supabase.from("concepts").insert({
@@ -690,6 +697,20 @@ app.post("/api/concepts/record", requireLogin, conceptUpload.single("file"), asy
     if (dbErr) return res.status(500).json({ error: dbErr.message });
 
     res.json({ ok: true, concept: row });
+});
+
+// Used by the "find footage" search box's mic button -- just returns text,
+// doesn't create anything. Reuses the same transcription path as above.
+app.post("/api/transcribe-only", requireLogin, conceptUpload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "no audio uploaded" });
+    let text;
+    try {
+        text = await transcribeAudioBuffer(req.file.buffer);
+    } catch (e) {
+        return res.status(500).json({ error: "transcription failed: " + e.message });
+    }
+    if (!text || !text.trim()) return res.status(400).json({ error: "couldn't make out any speech in that recording" });
+    res.json({ text: text.trim() });
 });
 
 app.post("/api/concepts/:id/upload-video", requireLogin, conceptUpload.single("file"), async (req, res) => {
@@ -757,12 +778,95 @@ app.post("/api/concepts/:id/attach-raw-media", requireLogin, async (req, res) =>
     res.json({ ok: true });
 });
 
-// Honest placeholder -- no Pexels/Pixabay key configured yet (both declined
-// self-serve signup: Pexels has paused new API keys, Pixabay's signup form
-// actively detects and blocks automated filling). Returns a clear error
-// instead of silently doing nothing, so the UI can say exactly what's wrong.
+// Turns a concept's hook text (often a narrative headline, not a literal
+// visual description -- "The Locate Ticket That Never Got Called" isn't
+// something a stock library can search on) into real search keywords.
+// Same claude-CLI pattern as the WhatsApp bot's translation, cheap tier.
+async function deriveSearchKeywords(conceptText) {
+    const prompt = `Extract 3-6 concise, literal, visual search keywords for finding stock video footage that matches this video concept. Think about what would actually be ON SCREEN, not the headline/angle. Respond with ONLY the keywords, space-separated, nothing else -- no explanation, no punctuation beyond spaces.
+
+Concept: "${conceptText}"`;
+    try {
+        const { stdout } = await execFileAsync("claude", [
+            "-p", prompt, "--output-format", "json", "--permission-prompts", "none", "--model", "claude-haiku-5-5",
+        ], { cwd: "/Users/h/my-agent", encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 20000 });
+        const parsed = JSON.parse(stdout.trim().split("\n").pop());
+        return (parsed.result || "").trim();
+    } catch (e) {
+        return conceptText; // fall back to the raw text rather than fail the whole search
+    }
+}
+
+// Search only -- returns candidates, doesn't download or attach anything.
+// Picking happens separately via pick-footage, same human-approval pattern
+// as everything else in this dashboard (nothing gets attached without a
+// deliberate click).
 app.post("/api/concepts/:id/find-footage", requireLogin, async (req, res) => {
-    res.status(501).json({ error: "Stock footage search isn't connected yet -- needs a free Pixabay API key, which needs a real human to sign up (their form blocks automated signups). Upload a video directly for now." });
+    if (!process.env.PIXABAY_API_KEY) {
+        return res.status(501).json({ error: "No Pixabay API key configured on the server yet." });
+    }
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: concept, error: cErr } = await supabase
+        .from("concepts").select("*").eq("id", req.params.id).single();
+    if (cErr || !concept) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const typedQuery = (req.body.query || "").trim();
+    const query = typedQuery || await deriveSearchKeywords(concept.text);
+
+    const url = `https://pixabay.com/api/videos/?key=${process.env.PIXABAY_API_KEY}&q=${encodeURIComponent(query)}&per_page=8&safesearch=true`;
+    let pixabayData;
+    try {
+        const resp = await fetch(url);
+        pixabayData = await resp.json();
+    } catch (e) {
+        return res.status(500).json({ error: "search request failed: " + e.message });
+    }
+    if (pixabayData.error) return res.status(500).json({ error: "Pixabay error: " + pixabayData.error });
+
+    const results = (pixabayData.hits || []).map(h => ({
+        id: h.id,
+        tags: h.tags,
+        thumbnail: h.videos.tiny.thumbnail,
+        previewUrl: h.videos.tiny.url,
+        downloadUrl: h.videos.medium ? h.videos.medium.url : h.videos.small.url,
+    }));
+    res.json({ query, results });
+});
+
+// The actual attach step -- downloads the picked Pixabay clip and copies it
+// into concept-media, same pattern as upload and attach-raw-media.
+app.post("/api/concepts/:id/pick-footage", requireLogin, async (req, res) => {
+    const { downloadUrl, pixabayId } = req.body;
+    if (!downloadUrl) return res.status(400).json({ error: "downloadUrl required" });
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: concept, error: cErr } = await supabase
+        .from("concepts").select("*").eq("id", req.params.id).single();
+    if (cErr || !concept) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    let buffer;
+    try {
+        const resp = await fetch(downloadUrl);
+        buffer = Buffer.from(await resp.arrayBuffer());
+    } catch (e) {
+        return res.status(500).json({ error: "couldn't download the clip: " + e.message });
+    }
+
+    const storagePath = `${concept.id}-${Date.now()}-pixabay${pixabayId || ""}.mp4`;
+    const { error: upErr } = await supabase.storage
+        .from("concept-media").upload(storagePath, buffer, { contentType: "video/mp4", upsert: true });
+    if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+
+    const { error: dbErr } = await supabase.from("concepts")
+        .update({ matched_video_path: storagePath, matched_media_type: "video", matched_video_source: "pixabay" })
+        .eq("id", concept.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true });
 });
 
 app.put("/api/concepts/:id", requireLogin, async (req, res) => {
