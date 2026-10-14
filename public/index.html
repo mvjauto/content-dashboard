@@ -690,26 +690,25 @@ async function loadTeam() {
         <h2 style="font-size:15px;">Current access</h2>
         ${teamUsers.map(u => `
         <div class="card">
-            <div style="cursor:${u.role === "owner" ? "default" : "pointer"};" ${u.role === "owner" ? "" : `onclick="toggleEditAccess('${u.id}')"`}>
+            <div style="cursor:pointer;" onclick="toggleEditAccess('${u.id}')">
                 <strong>${u.name}</strong> (${u.email}) — ${u.role}
                 <div class="meta">${u.clients === "all" ? "sees everything" : (u.clients.length ? u.clients.map(c => c.name).join(", ") : "no companies assigned")}</div>
-                ${u.role !== "owner" ? `<div style="font-size:11px; color:#2d6b48; margin-top:2px;">Click to edit access</div>` : ""}
+                <div style="font-size:11px; color:#2d6b48; margin-top:2px;">Click to ${u.role === "owner" ? "reset password" : "edit access or reset password"}</div>
             </div>
-            ${u.role !== "owner" ? `
             <div id="editAccess-${u.id}" style="display:none; margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
-                ${myClients.map(c => `
+                ${u.role !== "owner" ? myClients.map(c => `
                     <label style="margin-right:14px; font-size:13px;">
                         <input type="checkbox" class="editAccessCb-${u.id}" value="${c.slug}" style="display:inline; width:auto; margin:0 4px 0 0;"
                             ${u.clients !== "all" && u.clients.some(uc => uc.slug === c.slug) ? "checked" : ""}>
                         ${c.name}
                     </label>
-                `).join("")}
+                `).join("") : `<p style="font-size:12px; color:#888; margin:0 0 8px;">Owners always see every company -- nothing to pick here.</p>`}
                 <div style="margin-top:8px;">
-                    <button onclick="event.stopPropagation(); saveUserAccess('${u.id}')">Save access</button>
-                    <button onclick="event.stopPropagation(); resetUserPassword('${u.id}', '${u.email}')" style="margin-left:6px;">Reset password</button>
+                    ${u.role !== "owner" ? `<button onclick="event.stopPropagation(); saveUserAccess('${u.id}')">Save access</button>` : ""}
+                    <button onclick="event.stopPropagation(); resetUserPassword('${u.id}', '${u.email}')" ${u.role !== "owner" ? `style="margin-left:6px;"` : ""}>Reset password</button>
                 </div>
                 <div id="resetResult-${u.id}" style="margin-top:8px; font-size:13px;"></div>
-            </div>` : ""}
+            </div>
         </div>`).join("")}
     ` : "";
 }
