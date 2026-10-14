@@ -82,6 +82,7 @@
       <button class="tab" id="tab-broll" onclick="goBroll()">B-Roll</button>
       <button class="tab" id="tab-learning" onclick="showTab('learning')">Learning</button>
       <button class="tab" id="tab-team" onclick="showTab('team')" style="display:none;">Team</button>
+      <button class="tab" id="tab-concepts" onclick="showTab('concepts')">Concepts</button>
     </div>
     <span style="flex:1;"></span>
     <div class="usermenu">
@@ -145,6 +146,21 @@
     <div id="newUserResult" style="margin-top:10px;"></div>
     <div id="teamList" style="margin-top:18px;"></div>
   </section>
+
+  <section id="section-concepts" style="display:none;">
+    <h2>Concepts</h2>
+    <p style="color:#888; font-size:13px;">Hook ideas and video concepts, per company. Type one, or hit record and just talk through it.</p>
+    <label style="font-size:13px; display:block; margin-bottom:6px;">Company:
+      <select id="conceptClientSelect" style="padding:5px;"></select>
+    </label>
+    <textarea id="conceptText" rows="2" style="width:100%; max-width:500px; padding:8px; box-sizing:border-box; font-family:inherit;" placeholder="e.g. Burst water main shooting into the air, crew responding in under an hour"></textarea>
+    <div style="margin-top:6px;">
+      <button onclick="addConceptText()">Add concept</button>
+      <button id="recordBtn" onclick="toggleRecording()" style="margin-left:6px;">🎤 Record instead</button>
+      <span id="recordStatus" style="font-size:12px; color:#c0392b; margin-left:8px;"></span>
+    </div>
+    <div id="concepts" style="margin-top:14px;"></div>
+  </section>
 </div>
 
 <script>
@@ -206,13 +222,14 @@ async function changePassword() {
 }
 
 function showTab(tab) {
-    ["home", "queue", "broll", "learning", "team"].forEach(t => {
+    ["home", "queue", "broll", "learning", "team", "concepts"].forEach(t => {
         document.getElementById(`section-${t}`).style.display = t === tab ? "block" : "none";
         document.getElementById(`tab-${t}`).classList.toggle("active", t === tab);
     });
     syncUrl(tab);
     if (tab === "learning") loadExamples();
     if (tab === "team") loadTeam();
+    if (tab === "concepts") loadConcepts();
 }
 
 // Keeps the address bar in sync with whatever's actually on screen, so a
@@ -225,6 +242,7 @@ function syncUrl(tab) {
     if (tab === "queue") url = queueFilterSlug ? `/?queue=${queueFilterSlug}` : "/?tab=queue";
     else if (tab === "broll") url = "/?tab=broll";
     else if (tab === "learning") url = "/?tab=learning";
+    else if (tab === "concepts") url = "/?tab=concepts";
     else if (tab === "team") url = "/?tab=team";
     history.replaceState(null, "", url);
 }
@@ -274,6 +292,8 @@ async function showApp() {
         showTab("learning");
     } else if (tabParam === "team" && me.role === "owner") {
         showTab("team");
+    } else if (tabParam === "concepts") {
+        showTab("concepts");
     } else {
         showTab("home");
     }
@@ -711,6 +731,125 @@ async function loadTeam() {
             </div>
         </div>`).join("")}
     ` : "";
+}
+
+function renderConceptClientSelect() {
+    const sel = document.getElementById("conceptClientSelect");
+    const prevValue = sel.value;
+    sel.innerHTML = myClients.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    if (prevValue) sel.value = prevValue;
+}
+
+function selectedConceptClientId() {
+    const slug = document.getElementById("conceptClientSelect").value;
+    const client = myClients.find(c => c.slug === slug);
+    return client ? client.id : null;
+}
+
+async function loadConcepts() {
+    renderConceptClientSelect();
+    const concepts = await (await fetch("/api/concepts")).json();
+    document.getElementById("concepts").innerHTML = concepts.length ? concepts.map(c => `
+        <div class="card">
+            <div class="client">${c.clients ? c.clients.name : ""}</div>
+            <p style="white-space:pre-wrap;">${c.text}</p>
+            ${c.url
+                ? `<video src="${c.url}" controls style="max-width:220px; display:block; margin:8px 0;"></video>
+                   <div class="meta">video attached (${c.matched_video_source})</div>`
+                : `<div style="margin-top:8px;">
+                    <input type="file" accept="video/*" id="conceptVideoFile-${c.id}" style="display:block; margin-bottom:6px;">
+                    <button onclick="uploadConceptVideo('${c.id}')">Upload video for this</button>
+                    <button onclick="findFootage('${c.id}')" style="margin-left:6px;">Find footage online</button>
+                   </div>`}
+            <div id="conceptMsg-${c.id}" style="font-size:12px; margin-top:6px;"></div>
+            <button onclick="deleteConcept('${c.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
+        </div>
+    `).join("") : "<p>No concepts yet for this view.</p>";
+}
+
+async function addConceptText() {
+    const input = document.getElementById("conceptText");
+    const text = input.value.trim();
+    if (!text) { alert("Type something first."); return; }
+    const clientId = selectedConceptClientId();
+    if (!clientId) { alert("Pick a company first."); return; }
+    const res = await fetch("/api/concepts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, clientId }),
+    });
+    if (!res.ok) { alert("Couldn't add: " + (await res.json()).error); return; }
+    input.value = "";
+    loadConcepts();
+}
+
+let mediaRecorder = null;
+let recordedChunks = [];
+
+async function toggleRecording() {
+    const btn = document.getElementById("recordBtn");
+    const status = document.getElementById("recordStatus");
+
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+        return;
+    }
+
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+        status.textContent = "Mic access denied or unavailable.";
+        return;
+    }
+
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        btn.textContent = "🎤 Record instead";
+        status.textContent = "Transcribing...";
+
+        const clientId = selectedConceptClientId();
+        if (!clientId) { status.textContent = "Pick a company first."; return; }
+
+        const blob = new Blob(recordedChunks, { type: "audio/webm" });
+        const form = new FormData();
+        form.append("file", blob, "recording.webm");
+        form.append("clientId", clientId);
+        const res = await fetch("/api/concepts/record", { method: "POST", body: form });
+        if (!res.ok) { status.textContent = "Failed: " + (await res.json()).error; return; }
+        status.textContent = "Added.";
+        loadConcepts();
+    };
+
+    mediaRecorder.start();
+    btn.textContent = "⏹ Stop recording";
+    status.textContent = "Recording...";
+}
+
+async function uploadConceptVideo(conceptId) {
+    const input = document.getElementById(`conceptVideoFile-${conceptId}`);
+    if (!input.files[0]) { alert("Pick a video file first."); return; }
+    const form = new FormData();
+    form.append("file", input.files[0]);
+    const res = await fetch(`/api/concepts/${conceptId}/upload-video`, { method: "POST", body: form });
+    if (!res.ok) { alert("Upload failed: " + (await res.json()).error); return; }
+    loadConcepts();
+}
+
+async function findFootage(conceptId) {
+    const res = await fetch(`/api/concepts/${conceptId}/find-footage`, { method: "POST" });
+    const data = await res.json();
+    document.getElementById(`conceptMsg-${conceptId}`).textContent = data.error || "No results.";
+}
+
+async function deleteConcept(id) {
+    if (!confirm("Delete this concept for good?")) return;
+    const res = await fetch(`/api/concepts/${id}`, { method: "DELETE" });
+    if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
+    loadConcepts();
 }
 
 // If a session cookie is already valid, skip straight past the login form.

@@ -613,5 +613,133 @@ app.delete("/api/examples/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Concepts -- hook/video ideas, scoped per company like Learning. A concept
+// can get a video attached two ways: Josh uploads one himself (a screen
+// recording, a found clip, whatever), or -- once a stock-footage API key
+// exists -- Jarvis searches a real royalty-free library and Josh picks a
+// result. No API key configured yet; find-footage is wired to say so plainly
+// rather than pretend to work.
+const conceptUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+
+app.get("/api/concepts", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data, error } = await supabase
+        .from("concepts").select("*, clients(name, slug)")
+        .in("client_id", clientIds)
+        .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const withUrls = await Promise.all(data.map(async (row) => {
+        if (!row.matched_video_path) return { ...row, url: null };
+        const { data: signed } = await supabase.storage
+            .from("concept-media").createSignedUrl(row.matched_video_path, 3600);
+        return { ...row, url: signed ? signed.signedUrl : null };
+    }));
+    res.json(withUrls);
+});
+
+app.post("/api/concepts", requireLogin, async (req, res) => {
+    const text = (req.body.text || "").trim();
+    if (!text) return res.status(400).json({ error: "no text provided" });
+    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
+    if (!client) return res.status(400).json({ error: "pick a valid company" });
+
+    const { data: row, error: dbErr } = await supabase.from("concepts").insert({
+        client_id: client.id,
+        text,
+        created_by: req.session.user.id,
+    }).select().single();
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true, concept: row });
+});
+
+// Record-and-transcribe: Josh talks instead of typing. Audio never gets
+// stored -- it's piped straight to the same local Whisper model the
+// WhatsApp bot already uses, turned into text, then discarded.
+app.post("/api/concepts/record", requireLogin, conceptUpload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "no audio uploaded" });
+    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
+    if (!client) return res.status(400).json({ error: "pick a valid company" });
+
+    const tmpPath = path.join(os.tmpdir(), `concept-rec-${Date.now()}.webm`);
+    fs.writeFileSync(tmpPath, req.file.buffer);
+
+    let text;
+    try {
+        const { stdout } = await execFileAsync(
+            "/Users/h/my-agent/backtalk/.venv/bin/python3",
+            ["/Users/h/my-agent/whatsapp-bot/transcribe.py", tmpPath],
+            { encoding: "utf8", maxBuffer: 5 * 1024 * 1024, timeout: 60000 }
+        );
+        text = JSON.parse(stdout.trim().split("\n").pop()).text;
+    } catch (e) {
+        fs.unlinkSync(tmpPath);
+        return res.status(500).json({ error: "transcription failed: " + e.message });
+    }
+    fs.unlinkSync(tmpPath);
+    if (!text || !text.trim()) return res.status(400).json({ error: "couldn't make out any speech in that recording" });
+
+    const { data: row, error: dbErr } = await supabase.from("concepts").insert({
+        client_id: client.id,
+        text: text.trim(),
+        created_by: req.session.user.id,
+    }).select().single();
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true, concept: row });
+});
+
+app.post("/api/concepts/:id/upload-video", requireLogin, conceptUpload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "no file uploaded" });
+    if (!req.file.mimetype.startsWith("video/")) return res.status(400).json({ error: "video files only" });
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: concept, error: findErr } = await supabase
+        .from("concepts").select("*").eq("id", req.params.id).single();
+    if (findErr || !concept) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const ext = path.extname(req.file.originalname) || ".mp4";
+    const storagePath = `${concept.id}-${Date.now()}${ext}`;
+    const { error: upErr } = await supabase.storage
+        .from("concept-media").upload(storagePath, req.file.buffer, { contentType: req.file.mimetype, upsert: true });
+    if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+
+    const { error: dbErr } = await supabase.from("concepts")
+        .update({ matched_video_path: storagePath, matched_video_source: "upload" })
+        .eq("id", concept.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true });
+});
+
+// Honest placeholder -- no Pexels/Pixabay key configured yet (both declined
+// self-serve signup: Pexels has paused new API keys, Pixabay's signup form
+// actively detects and blocks automated filling). Returns a clear error
+// instead of silently doing nothing, so the UI can say exactly what's wrong.
+app.post("/api/concepts/:id/find-footage", requireLogin, async (req, res) => {
+    res.status(501).json({ error: "Stock footage search isn't connected yet -- needs a free Pixabay API key, which needs a real human to sign up (their form blocks automated signups). Upload a video directly for now." });
+});
+
+app.delete("/api/concepts/:id", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: concept, error: findErr } = await supabase
+        .from("concepts").select("*").eq("id", req.params.id).single();
+    if (findErr || !concept) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    if (concept.matched_video_path) {
+        await supabase.storage.from("concept-media").remove([concept.matched_video_path]);
+    }
+    const { error: dbErr } = await supabase.from("concepts").delete().eq("id", concept.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+    res.json({ ok: true });
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`content-dashboard listening on ${port}`));
