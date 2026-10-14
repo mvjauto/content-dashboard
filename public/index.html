@@ -83,6 +83,7 @@
       <button class="tab" id="tab-learning" onclick="showTab('learning')">Learning</button>
       <button class="tab" id="tab-team" onclick="showTab('team')" style="display:none;">Team</button>
       <button class="tab" id="tab-concepts" onclick="showTab('concepts')">Concepts</button>
+      <button class="tab" id="tab-calendar" onclick="showTab('calendar')">Calendar</button>
     </div>
     <span style="flex:1;"></span>
     <div class="usermenu">
@@ -166,6 +167,37 @@
     </div>
     <div id="concepts" style="margin-top:14px;"></div>
   </section>
+
+  <section id="section-calendar" style="display:none;">
+    <h2>Calendar</h2>
+    <p style="color:#888; font-size:13px;">Schedule when a finished post goes out and to which platforms. This schedules intent -- it doesn't publish anything yet, that step's still parked.</p>
+    <label style="font-size:13px; display:block; margin-bottom:10px;">Company:
+      <select id="calClientSelect" style="padding:5px;" onchange="loadCalendar()"></select>
+    </label>
+
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+      <button onclick="calShiftMonth(-1)">&larr;</button>
+      <strong id="calMonthLabel" style="font-size:15px;"></strong>
+      <button onclick="calShiftMonth(1)">&rarr;</button>
+    </div>
+    <div id="calGrid" style="display:grid; grid-template-columns:repeat(7,1fr); gap:4px;"></div>
+
+    <div style="margin-top:20px; padding-top:14px; border-top:1px dashed #ddd;">
+      <h3 style="font-size:14px; margin-bottom:8px;">Schedule a post</h3>
+      <select id="calPostSelect" style="max-width:400px; display:block; margin-bottom:6px;"></select>
+      <input type="date" id="calDate" style="margin-right:6px;">
+      <input type="time" id="calTime" style="margin-right:6px;">
+      <div style="margin:8px 0;">
+        <label style="margin-right:12px; font-size:13px;"><input type="checkbox" class="calPlatformCb" value="instagram" style="display:inline; width:auto;"> Instagram</label>
+        <label style="margin-right:12px; font-size:13px;"><input type="checkbox" class="calPlatformCb" value="facebook" style="display:inline; width:auto;"> Facebook</label>
+        <label style="margin-right:12px; font-size:13px;"><input type="checkbox" class="calPlatformCb" value="tiktok" style="display:inline; width:auto;"> TikTok</label>
+        <label style="margin-right:12px; font-size:13px;"><input type="checkbox" class="calPlatformCb" value="youtube" style="display:inline; width:auto;"> YouTube</label>
+        <label style="margin-right:12px; font-size:13px;"><input type="checkbox" class="calPlatformCb" value="linkedin" style="display:inline; width:auto;"> LinkedIn</label>
+      </div>
+      <button onclick="schedulePost()">Schedule it</button>
+      <span id="calMsg" style="font-size:12px; color:#888; margin-left:8px;"></span>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -231,7 +263,7 @@ async function changePassword() {
 }
 
 function showTab(tab) {
-    ["home", "queue", "broll", "learning", "team", "concepts"].forEach(t => {
+    ["home", "queue", "broll", "learning", "team", "concepts", "calendar"].forEach(t => {
         document.getElementById(`section-${t}`).style.display = t === tab ? "block" : "none";
         document.getElementById(`tab-${t}`).classList.toggle("active", t === tab);
     });
@@ -239,6 +271,7 @@ function showTab(tab) {
     if (tab === "learning") loadExamples();
     if (tab === "team") loadTeam();
     if (tab === "concepts") loadConcepts();
+    if (tab === "calendar") loadCalendar();
 }
 
 // Keeps the address bar in sync with whatever's actually on screen, so a
@@ -252,6 +285,7 @@ function syncUrl(tab) {
     else if (tab === "broll") url = "/?tab=broll";
     else if (tab === "learning") url = "/?tab=learning";
     else if (tab === "concepts") url = "/?tab=concepts";
+    else if (tab === "calendar") url = "/?tab=calendar";
     else if (tab === "team") url = "/?tab=team";
     history.replaceState(null, "", url);
 }
@@ -303,6 +337,8 @@ async function showApp() {
         showTab("team");
     } else if (tabParam === "concepts") {
         showTab("concepts");
+    } else if (tabParam === "calendar") {
+        showTab("calendar");
     } else {
         showTab("home");
     }
@@ -968,6 +1004,100 @@ async function deleteConcept(id) {
     const res = await fetch(`/api/concepts/${id}`, { method: "DELETE" });
     if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
     loadConcepts();
+}
+
+let calMonthDate = new Date();
+let calScheduled = [];
+
+function renderCalClientSelect() {
+    const sel = document.getElementById("calClientSelect");
+    const prevValue = sel.value;
+    sel.innerHTML = myClients.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    if (prevValue) sel.value = prevValue;
+}
+
+function calShiftMonth(delta) {
+    calMonthDate.setMonth(calMonthDate.getMonth() + delta);
+    renderCalGrid();
+}
+
+async function loadCalendar() {
+    renderCalClientSelect();
+    const slug = document.getElementById("calClientSelect").value;
+
+    const all = await (await fetch("/api/scheduled-posts")).json();
+    calScheduled = slug ? all.filter(s => s.clients && s.clients.slug === slug) : all;
+
+    const client = myClients.find(c => c.slug === slug);
+    const posts = client ? await (await fetch("/api/posts")).json() : [];
+    const eligible = posts.filter(p => p.client_id === (client ? client.id : null) && (p.status === "approved" || p.finished_media_path));
+    document.getElementById("calPostSelect").innerHTML = eligible.length
+        ? eligible.map(p => `<option value="${p.id}">${(p.caption_draft || p.caption_final || "(no caption)").slice(0, 60)}</option>`).join("")
+        : `<option value="">No approved/finished posts for this company yet</option>`;
+
+    renderCalGrid();
+}
+
+function renderCalGrid() {
+    const year = calMonthDate.getFullYear();
+    const month = calMonthDate.getMonth();
+    document.getElementById("calMonthLabel").textContent = calMonthDate.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+    const firstDay = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const startWeekday = firstDay.getDay();
+
+    const byDate = {};
+    calScheduled.forEach(s => {
+        if (!byDate[s.scheduled_date]) byDate[s.scheduled_date] = [];
+        byDate[s.scheduled_date].push(s);
+    });
+
+    let cells = "";
+    ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].forEach(d => {
+        cells += `<div style="font-size:11px; color:#888; text-align:center; padding:4px;">${d}</div>`;
+    });
+    for (let i = 0; i < startWeekday; i++) cells += `<div></div>`;
+    for (let day = 1; day <= daysInMonth; day++) {
+        const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        const items = byDate[dateStr] || [];
+        cells += `
+            <div style="border:1px solid #ddd; border-radius:4px; min-height:70px; padding:4px; font-size:11px;">
+                <div style="color:#888;">${day}</div>
+                ${items.map(s => `
+                    <div onclick="deleteScheduled('${s.id}')" style="background:#e8f3ec; border-radius:3px; padding:2px 4px; margin-top:2px; cursor:pointer;" title="Click to remove">
+                        ${s.scheduled_time} — ${s.platform}
+                    </div>
+                `).join("")}
+            </div>`;
+    }
+    document.getElementById("calGrid").innerHTML = cells;
+}
+
+async function schedulePost() {
+    const postId = document.getElementById("calPostSelect").value;
+    const date = document.getElementById("calDate").value;
+    const time = document.getElementById("calTime").value;
+    const platforms = Array.from(document.querySelectorAll(".calPlatformCb:checked")).map(cb => cb.value);
+    const msg = document.getElementById("calMsg");
+    if (!postId || !date || !time || !platforms.length) { msg.textContent = "Pick a post, a date, a time, and at least one platform."; return; }
+
+    const res = await fetch("/api/scheduled-posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId, date, time, platforms }),
+    });
+    if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
+    msg.textContent = "Scheduled.";
+    document.querySelectorAll(".calPlatformCb").forEach(cb => cb.checked = false);
+    loadCalendar();
+}
+
+async function deleteScheduled(id) {
+    if (!confirm("Remove this from the schedule?")) return;
+    const res = await fetch(`/api/scheduled-posts/${id}`, { method: "DELETE" });
+    if (!res.ok) { alert("Couldn't remove: " + (await res.json()).error); return; }
+    loadCalendar();
 }
 
 // If a session cookie is already valid, skip straight past the login form.

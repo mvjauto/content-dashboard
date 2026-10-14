@@ -970,5 +970,58 @@ app.delete("/api/concepts/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Calendar -- scheduling, not publishing. A post (already approved/finished)
+// gets a date, a time, and a set of platforms checked -- one row per
+// platform, matching the real-world shape of a multi-platform publish job
+// even though the actual publish step itself is still parked.
+app.get("/api/scheduled-posts", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data, error } = await supabase
+        .from("scheduled_posts")
+        .select("*, clients(name, slug), posts(caption_draft, caption_final, finished_media_path, edited_media_path, raw_media_id)")
+        .in("client_id", clientIds)
+        .order("scheduled_date", { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+});
+
+app.post("/api/scheduled-posts", requireLogin, async (req, res) => {
+    const { postId, date, time, platforms } = req.body;
+    if (!postId || !date || !time || !Array.isArray(platforms) || !platforms.length) {
+        return res.status(400).json({ error: "postId, date, time, and at least one platform are required" });
+    }
+
+    const { data: post, error: postErr } = await supabase
+        .from("posts").select("id, client_id").eq("id", postId).single();
+    if (postErr || !post) return res.status(404).json({ error: "post not found" });
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    if (!clientIds.includes(post.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const rows = platforms.map(platform => ({
+        post_id: post.id, client_id: post.client_id, scheduled_date: date,
+        scheduled_time: time, platform, created_by: req.session.user.id,
+    }));
+    const { data, error } = await supabase.from("scheduled_posts").insert(rows).select();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, scheduled: data });
+});
+
+app.delete("/api/scheduled-posts/:id", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: row, error: findErr } = await supabase
+        .from("scheduled_posts").select("*").eq("id", req.params.id).single();
+    if (findErr || !row) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const { error } = await supabase.from("scheduled_posts").delete().eq("id", row.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`content-dashboard listening on ${port}`));

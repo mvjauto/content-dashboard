@@ -118,6 +118,23 @@ create table concepts (
   created_at timestamptz not null default now()
 );
 
+-- Calendar: one row per platform a post gets scheduled to, so one
+-- scheduling action (pick a post, pick a date/time, check N platforms)
+-- creates N rows sharing the same date/time -- matches how an actual
+-- multi-platform publish eventually works (each platform is its own job),
+-- without needing platform_accounts to exist yet for publishing to happen
+-- later. This table is intent/scheduling only -- it does not publish.
+create table scheduled_posts (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references posts(id) on delete cascade,
+  client_id uuid not null references clients(id) on delete cascade,
+  scheduled_date date not null,
+  scheduled_time text not null,         -- "HH:MM", kept as plain text to sidestep timezone complexity
+  platform text not null check (platform in ('instagram','facebook','tiktok','youtube','linkedin')),
+  created_by uuid references users(id),
+  created_at timestamptz not null default now()
+);
+
 insert into clients (slug, name, active) values
   ('811-assist', '811 Assist', true),
   ('axion-pept', 'Axion Pept', true),
