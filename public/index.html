@@ -121,11 +121,14 @@
 
   <section id="section-learning" style="display:none;">
     <h2>Learning examples</h2>
-    <p style="color:#888; font-size:13px;">Reference videos or photos you want Jarvis to actually study — not tied to any one client. Jarvis pulls frames and audio and writes up what's working.</p>
+    <p style="color:#888; font-size:13px;">Video, image, or audio Jarvis actually studies, or a typed standing instruction — scoped per company, since what works for one isn't the same as another. Pick the company below before adding anything.</p>
+    <label style="font-size:13px; display:block; margin-bottom:6px;">Company:
+      <select id="learningClientSelect" style="padding:5px;"></select>
+    </label>
     <input type="file" id="exampleFile" accept="video/*,image/*,audio/*">
-    <button onclick="uploadExample()">Upload</button>
+    <button onclick="uploadExample()">Upload (video, image, or audio)</button>
     <div style="margin-top:12px; padding-top:12px; border-top:1px dashed #ddd;">
-      <p style="color:#888; font-size:13px; margin:0 0 6px;">Or type a standing instruction — "use this logo," "stop doing X." No file needed; this gets pulled into every caption Jarvis drafts from now on.</p>
+      <p style="color:#888; font-size:13px; margin:0 0 6px;">Or type a standing instruction — "use this logo," "stop doing X." No file needed; this gets pulled into every caption Jarvis drafts for that company from now on.</p>
       <textarea id="instructionText" rows="2" style="width:100%; max-width:500px; padding:8px; box-sizing:border-box; font-family:inherit;" placeholder="e.g. Never use the word &quot;guys&quot; in captions"></textarea>
       <button onclick="addTextNote()">Add note</button>
     </div>
@@ -541,10 +544,19 @@ async function approve(id) {
     loadPosts();
 }
 
+function renderLearningClientSelect() {
+    const sel = document.getElementById("learningClientSelect");
+    const prevValue = sel.value;
+    sel.innerHTML = myClients.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    if (prevValue) sel.value = prevValue;
+}
+
 async function loadExamples() {
+    renderLearningClientSelect();
     const examples = await (await fetch("/api/examples")).json();
     document.getElementById("examples").innerHTML = examples.length ? examples.map(e => `
         <div class="card">
+            <div class="client">${e.clients ? e.clients.name : ""}</div>
             ${e.media_type === "text"
                 ? `<div style="padding:10px; background:#fff6e0; border:1px solid #f0dca0; border-radius:4px; font-size:14px;"><strong>Standing instruction:</strong> ${e.instruction_text}</div>`
                 : e.url
@@ -560,14 +572,23 @@ async function loadExamples() {
                 : `<div style="margin-top:6px; font-size:12px; color:#888;">Not reviewed yet — ask Jarvis to take a look.</div>`) : ""}
             <button onclick="deleteExample('${e.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
         </div>
-    `).join("") : "<p>Nothing uploaded yet.</p>";
+    `).join("") : "<p>Nothing uploaded yet for this company's view -- switch companies above or add something.</p>";
+}
+
+function selectedLearningClientId() {
+    const slug = document.getElementById("learningClientSelect").value;
+    const client = myClients.find(c => c.slug === slug);
+    return client ? client.id : null;
 }
 
 async function uploadExample() {
     const input = document.getElementById("exampleFile");
     if (!input.files[0]) { alert("Pick a file first."); return; }
+    const clientId = selectedLearningClientId();
+    if (!clientId) { alert("Pick a company first."); return; }
     const form = new FormData();
     form.append("file", input.files[0]);
+    form.append("clientId", clientId);
     const res = await fetch("/api/examples/upload", { method: "POST", body: form });
     if (!res.ok) { alert("Upload failed: " + (await res.json()).error); return; }
     input.value = "";
@@ -578,10 +599,12 @@ async function addTextNote() {
     const input = document.getElementById("instructionText");
     const text = input.value.trim();
     if (!text) { alert("Type something first."); return; }
+    const clientId = selectedLearningClientId();
+    if (!clientId) { alert("Pick a company first."); return; }
     const res = await fetch("/api/examples/text-note", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, clientId }),
     });
     if (!res.ok) { alert("Couldn't add note: " + (await res.json()).error); return; }
     input.value = "";
@@ -630,15 +653,63 @@ async function addUser() {
     loadTeam();
 }
 
+function toggleEditAccess(userId) {
+    const el = document.getElementById(`editAccess-${userId}`);
+    el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+async function saveUserAccess(userId) {
+    const clientSlugs = Array.from(document.querySelectorAll(`.editAccessCb-${userId}:checked`)).map(cb => cb.value);
+    const res = await fetch(`/api/users/${userId}/access`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientSlugs }),
+    });
+    if (!res.ok) { alert("Couldn't save: " + (await res.json()).error); return; }
+    loadTeam();
+}
+
+async function resetUserPassword(userId, email) {
+    if (!confirm(`Generate a new temp password for ${email}? Their old one stops working immediately.`)) return;
+    const res = await fetch(`/api/users/${userId}/reset-password`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) { alert("Couldn't reset: " + data.error); return; }
+    document.getElementById(`resetResult-${userId}`).innerHTML = `
+        <div style="padding:8px; background:#e8f3ec; border:1px solid #bcdfc9; border-radius:4px;">
+            New temp password for ${email}: <strong>${data.tempPassword}</strong><br>
+            Send it yourself -- no auto-email yet.
+        </div>`;
+}
+
+let teamUsers = [];
+
 async function loadTeam() {
     renderUserClientCheckboxes();
-    const users = await (await fetch("/api/users")).json();
-    document.getElementById("teamList").innerHTML = users.length ? `
+    teamUsers = await (await fetch("/api/users")).json();
+    document.getElementById("teamList").innerHTML = teamUsers.length ? `
         <h2 style="font-size:15px;">Current access</h2>
-        ${users.map(u => `
+        ${teamUsers.map(u => `
         <div class="card">
-            <strong>${u.name}</strong> (${u.email}) — ${u.role}
-            <div class="meta">${u.clients === "all" ? "sees everything" : (u.clients.length ? u.clients.map(c => c.name).join(", ") : "no companies assigned")}</div>
+            <div style="cursor:${u.role === "owner" ? "default" : "pointer"};" ${u.role === "owner" ? "" : `onclick="toggleEditAccess('${u.id}')"`}>
+                <strong>${u.name}</strong> (${u.email}) — ${u.role}
+                <div class="meta">${u.clients === "all" ? "sees everything" : (u.clients.length ? u.clients.map(c => c.name).join(", ") : "no companies assigned")}</div>
+                ${u.role !== "owner" ? `<div style="font-size:11px; color:#2d6b48; margin-top:2px;">Click to edit access</div>` : ""}
+            </div>
+            ${u.role !== "owner" ? `
+            <div id="editAccess-${u.id}" style="display:none; margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
+                ${myClients.map(c => `
+                    <label style="margin-right:14px; font-size:13px;">
+                        <input type="checkbox" class="editAccessCb-${u.id}" value="${c.slug}" style="display:inline; width:auto; margin:0 4px 0 0;"
+                            ${u.clients !== "all" && u.clients.some(uc => uc.slug === c.slug) ? "checked" : ""}>
+                        ${c.name}
+                    </label>
+                `).join("")}
+                <div style="margin-top:8px;">
+                    <button onclick="event.stopPropagation(); saveUserAccess('${u.id}')">Save access</button>
+                    <button onclick="event.stopPropagation(); resetUserPassword('${u.id}', '${u.email}')" style="margin-left:6px;">Reset password</button>
+                </div>
+                <div id="resetResult-${u.id}" style="margin-top:8px; font-size:13px;"></div>
+            </div>` : ""}
         </div>`).join("")}
     ` : "";
 }

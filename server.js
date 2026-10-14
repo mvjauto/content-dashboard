@@ -135,6 +135,45 @@ app.post("/api/users", requireOwner, async (req, res) => {
     res.json({ ok: true, user, tempPassword });
 });
 
+// Replaces a staff member's whole set of company access in one shot --
+// Josh checks/unchecks boxes for that person and hits save, this just makes
+// the database match exactly what's checked. Owners aren't editable here --
+// their role already sees everything regardless of this table.
+app.put("/api/users/:id/access", requireOwner, async (req, res) => {
+    const { clientSlugs } = req.body;
+    if (!Array.isArray(clientSlugs)) return res.status(400).json({ error: "clientSlugs must be an array" });
+
+    const { data: targetUser } = await supabase.from("users").select("id, role").eq("id", req.params.id).single();
+    if (!targetUser) return res.status(404).json({ error: "not found" });
+    if (targetUser.role === "owner") return res.status(400).json({ error: "owners already see everything" });
+
+    const { error: delErr } = await supabase.from("user_client_access").delete().eq("user_id", targetUser.id);
+    if (delErr) return res.status(500).json({ error: delErr.message });
+
+    if (clientSlugs.length) {
+        const { data: clients } = await supabase.from("clients").select("id, slug").in("slug", clientSlugs);
+        const accessRows = clients.map(c => ({ user_id: targetUser.id, client_id: c.id }));
+        const { error: insErr } = await supabase.from("user_client_access").insert(accessRows);
+        if (insErr) return res.status(500).json({ error: insErr.message });
+    }
+
+    res.json({ ok: true });
+});
+
+// Owner-triggered reset for someone who lost/never got their temp password --
+// doesn't need the old password, unlike the self-service change-password route.
+app.post("/api/users/:id/reset-password", requireOwner, async (req, res) => {
+    const { data: targetUser } = await supabase.from("users").select("id, email").eq("id", req.params.id).single();
+    if (!targetUser) return res.status(404).json({ error: "not found" });
+
+    const tempPassword = crypto.randomBytes(9).toString("base64").replace(/[+/=]/g, "").slice(0, 12);
+    const hash = await bcrypt.hash(tempPassword, 10);
+    const { error } = await supabase.from("users").update({ password_hash: hash }).eq("id", targetUser.id);
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ ok: true, tempPassword });
+});
+
 // Raw B-roll waiting for someone to turn it into a post, scoped to clients
 // this user can actually see. Lightweight -- just how many per client, for
 // the clickable client cards on the main page; the full list with playable
@@ -473,8 +512,13 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
 const exampleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
 app.get("/api/examples", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
     const { data, error } = await supabase
-        .from("example_media").select("*").order("uploaded_at", { ascending: false });
+        .from("example_media").select("*, clients(name, slug)")
+        .in("client_id", clientIds)
+        .order("uploaded_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
 
     const withUrls = await Promise.all(data.map(async (row) => {
@@ -486,8 +530,19 @@ app.get("/api/examples", requireLogin, async (req, res) => {
     res.json(withUrls);
 });
 
+// Checks the posted clientId against clients THIS user can actually see --
+// never trust a slug/id from the request body alone, same pattern as every
+// other client-scoped route in this file.
+async function resolveAllowedClient(user, clientId) {
+    const clients = await clientsVisibleTo(user);
+    return clients.find(c => c.id === clientId) || null;
+}
+
 app.post("/api/examples/upload", requireLogin, exampleUpload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "no file uploaded" });
+    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
+    if (!client) return res.status(400).json({ error: "pick a valid company" });
+
     const isVideo = req.file.mimetype.startsWith("video/");
     const isImage = req.file.mimetype.startsWith("image/");
     const isAudio = req.file.mimetype.startsWith("audio/");
@@ -501,6 +556,7 @@ app.post("/api/examples/upload", requireLogin, exampleUpload.single("file"), asy
     if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
 
     const { data: row, error: dbErr } = await supabase.from("example_media").insert({
+        client_id: client.id,
         storage_path: storagePath,
         media_type: isVideo ? "video" : isAudio ? "audio" : "image",
         original_filename: req.file.originalname,
@@ -518,8 +574,11 @@ app.post("/api/examples/upload", requireLogin, exampleUpload.single("file"), asy
 app.post("/api/examples/text-note", requireLogin, async (req, res) => {
     const text = (req.body.text || "").trim();
     if (!text) return res.status(400).json({ error: "no text provided" });
+    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
+    if (!client) return res.status(400).json({ error: "pick a valid company" });
 
     const { data: row, error: dbErr } = await supabase.from("example_media").insert({
+        client_id: client.id,
         media_type: "text",
         instruction_text: text,
         uploaded_by: req.session.user.id,

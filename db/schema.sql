@@ -91,6 +91,7 @@ create table user_client_access (
 -- frames + audio from the file in Storage and writes findings into `notes`.
 create table example_media (
   id uuid primary key default gen_random_uuid(),
+  client_id uuid references clients(id),  -- which company this learning applies to -- learning is NOT shared across companies, Josh was explicit
   storage_path text,                    -- path in the "learning-examples" bucket; null for text instructions (no file)
   media_type text not null check (media_type in ('video','image','audio','text')),
   original_filename text,
