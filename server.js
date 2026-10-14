@@ -870,6 +870,74 @@ app.post("/api/concepts/:id/pick-footage", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Durable context baked into the deployed code rather than read from Josh's
+// vault -- the vault only exists on his own Mac, Render can't see it (same
+// lesson as the transcription bug). These are condensed, faithful copies of
+// what's already written in the vault's research notes; update both places
+// together if the source material changes.
+const SHARED_PERFORMANCE_LEARNINGS = `The first ~2 seconds decide whether someone keeps watching -- bold claims, questions, and "did you know" framing outperform generic openers. Watch time and completion are the top-weighted ranking signals on Instagram and TikTok, not likes -- shares/saves outweigh likes too. Short wins: most high performers land in the 20-40s range. For trades content specifically: real crew/jobsite footage consistently beats anything polished or stock, before-and-afters and problem-then-fix narratives perform well. Numbered-list hooks ("5 Things That Actually Cause X") are a strong, proven format for this account -- but a hook that never resolves on-screen (pure "check the caption" payoff) fights against watch-time being the top signal.`;
+
+const CLIENT_MARKETING_CONTEXT = {
+    "811-assist": `811 Assist sells certainty that you're covered, not ticket-management software -- the relief of being able to prove what you knew and when, so a crew member isn't eating the cost of an unmarked line. Emotional subject of content: the field crew. Actual buyer: the business owner/office manager worried about liability exposure. Real angles already validated: cost-of-damage stats (CGA's $83B/year figure made personal), the "86% of damage has 3 root causes" DIRT data (no ticket / invalid ticket / incorrect ticket), industry-neglect framing (conference spending vs. tool spending), and honest case-study angles. Always point toward the idea of proof/certainty, never generic "sign up" language.`,
+    "axion-pept": `Axion Pept sells trust and verification in a category where generic "third-party tested" claims are common and often thin. Real validated angles: named-lab, lot-number-specific COA verification (the actual differentiator competitors lack), responsiveness to verification requests, and the loyalty/subscription gap nobody in the category has filled. HARD COMPLIANCE RULE, never break it: research-use framing only -- zero dosing-for-consumer language, zero before/after claims, zero therapeutic or performance claims, nothing implying human use. This is the single biggest compliance risk in this category (FDA attention specifically targets coded consumer-use language), so every concept must read as "how to evaluate a supplier," never "what this does for you."`,
+};
+
+// Pulls durable context (above) + this client's standing Learning
+// instructions (database, so it works from Render regardless of who's
+// logged in) + existing concepts (to avoid writing duplicates), then asks
+// Claude for N new ones and inserts them for real -- same automated
+// pattern as translation and the email check, cheap Haiku tier.
+app.post("/api/concepts/generate", requireLogin, async (req, res) => {
+    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
+    if (!client) return res.status(400).json({ error: "pick a valid company" });
+    const count = Math.min(Math.max(parseInt(req.body.count, 10) || 5, 1), 12);
+
+    const { data: instructions } = await supabase.from("example_media")
+        .select("instruction_text").eq("client_id", client.id).eq("media_type", "text");
+    const { data: existing } = await supabase.from("concepts")
+        .select("text").eq("client_id", client.id);
+
+    const marketingContext = CLIENT_MARKETING_CONTEXT[client.slug] || "(no dedicated marketing plan written yet for this company -- stay general and factual.)";
+    const standingInstructions = (instructions || []).map(i => `- ${i.instruction_text}`).join("\n") || "(none yet)";
+    const existingHooks = (existing || []).map(c => `- ${c.text.slice(0, 80)}`).join("\n") || "(none yet)";
+
+    const prompt = `You're writing ${count} new short-form video hook/concept ideas for ${client.name}'s social content. Each one should be a single paragraph: a specific, curiosity-driven hook line plus a one-sentence description of the concept/angle. Ground every idea in the real context below -- don't invent generic marketing fluff.
+
+What's proven to work on social generally:
+${SHARED_PERFORMANCE_LEARNINGS}
+
+This company's actual marketing/brand context:
+${marketingContext}
+
+Standing rules this company has set (never violate these):
+${standingInstructions}
+
+Hooks that already exist -- do NOT repeat these angles, write genuinely different ones:
+${existingHooks}
+
+Respond with ONLY the ${count} new concepts, one per line, nothing else -- no numbering, no headers, no explanation.`;
+
+    let lines;
+    try {
+        const { stdout } = await execFileAsync("claude", [
+            "-p", prompt, "--output-format", "json", "--permission-prompts", "none", "--model", "claude-haiku-5-5",
+        ], { cwd: "/Users/h/my-agent", encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 45000 });
+        const parsed = JSON.parse(stdout.trim().split("\n").pop());
+        lines = (parsed.result || "").trim().split("\n").map(l => l.trim()).filter(Boolean);
+    } catch (e) {
+        return res.status(500).json({ error: "generation failed: " + e.message });
+    }
+
+    const inserted = [];
+    for (const text of lines) {
+        const { data: row, error } = await supabase.from("concepts").insert({
+            client_id: client.id, text, created_by: req.session.user.id,
+        }).select().single();
+        if (!error) inserted.push(row);
+    }
+    res.json({ ok: true, concepts: inserted });
+});
+
 app.put("/api/concepts/:id", requireLogin, async (req, res) => {
     const text = (req.body.text || "").trim();
     if (!text) return res.status(400).json({ error: "text can't be empty" });
