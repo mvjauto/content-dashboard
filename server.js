@@ -19,6 +19,11 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const FFMPEG_BIN = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg";
 
 const app = express();
+// Render (and most host platforms) terminate TLS at their own proxy and
+// forward to this app over plain HTTP -- without this, Express thinks every
+// request is insecure and silently refuses to set the secure session
+// cookie, so nobody could ever actually stay logged in once deployed.
+app.set("trust proxy", 1);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 app.use(session({
