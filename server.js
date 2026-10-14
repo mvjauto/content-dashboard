@@ -73,6 +73,23 @@ app.post("/api/logout", (req, res) => {
     req.session.destroy(() => res.json({ ok: true }));
 });
 
+app.post("/api/change-password", requireLogin, async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!newPassword || newPassword.length < 8) {
+        return res.status(400).json({ error: "new password must be at least 8 characters" });
+    }
+
+    const { data: user } = await supabase.from("users").select("*").eq("id", req.session.user.id).single();
+    if (!user || !(await bcrypt.compare(currentPassword || "", user.password_hash))) {
+        return res.status(401).json({ error: "current password is wrong" });
+    }
+
+    const hash = await bcrypt.hash(newPassword, 10);
+    const { error } = await supabase.from("users").update({ password_hash: hash }).eq("id", user.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+});
+
 app.get("/api/me", requireLogin, (req, res) => res.json(req.session.user));
 
 app.get("/api/clients", requireLogin, async (req, res) => {

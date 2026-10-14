@@ -89,6 +89,14 @@
       <div class="usermenu-dropdown" id="usermenu-dropdown" style="display:none;">
         <div class="who" id="who"></div>
         <hr>
+        <button class="company-opt" onclick="toggleChangePassword()">Change password</button>
+        <div id="changePasswordForm" style="display:none; padding:10px 14px; border-top:1px solid #eee;">
+          <input id="cpCurrent" type="password" placeholder="Current password" style="font-size:13px; padding:6px; margin-bottom:6px;">
+          <input id="cpNew" type="password" placeholder="New password (8+ chars)" style="font-size:13px; padding:6px; margin-bottom:6px;">
+          <button onclick="changePassword()" style="font-size:12px; padding:5px 10px;">Save</button>
+          <div id="cpMsg" style="font-size:12px; margin-top:4px;"></div>
+        </div>
+        <hr>
         <button class="signout" onclick="logout()">Sign out</button>
       </div>
     </div>
@@ -170,6 +178,28 @@ function initials(name) {
 function toggleUserMenu() {
     const el = document.getElementById("usermenu-dropdown");
     el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+function toggleChangePassword() {
+    const el = document.getElementById("changePasswordForm");
+    el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+async function changePassword() {
+    const currentPassword = document.getElementById("cpCurrent").value;
+    const newPassword = document.getElementById("cpNew").value;
+    const msg = document.getElementById("cpMsg");
+    const res = await fetch("/api/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.style.color = "#c0392b"; msg.textContent = data.error; return; }
+    msg.style.color = "#2d6b48";
+    msg.textContent = "Changed. Use it next time you log in.";
+    document.getElementById("cpCurrent").value = "";
+    document.getElementById("cpNew").value = "";
 }
 
 function showTab(tab) {
