@@ -1,12 +1,14 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const crypto = require("crypto");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
 const express = require("express");
 const session = require("express-session");
 const bcrypt = require("bcrypt");
+const multer = require("multer");
 const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -28,6 +30,11 @@ app.use(session({
 
 function requireLogin(req, res, next) {
     if (!req.session.user) return res.status(401).json({ error: "not logged in" });
+    next();
+}
+
+function requireOwner(req, res, next) {
+    if (!req.session.user || req.session.user.role !== "owner") return res.status(403).json({ error: "owner only" });
     next();
 }
 
@@ -65,6 +72,45 @@ app.get("/api/me", requireLogin, (req, res) => res.json(req.session.user));
 
 app.get("/api/clients", requireLogin, async (req, res) => {
     res.json(await clientsVisibleTo(req.session.user));
+});
+
+// Owner-only team management -- lets Josh add people himself instead of
+// coming to Jarvis every time. Generates a real random temp password,
+// returned once in the response (never stored in plaintext, never logged)
+// for Josh to relay. No auto-email yet -- that needs an SMTP credential
+// that doesn't exist here yet, flagged honestly rather than faked.
+app.get("/api/users", requireOwner, async (req, res) => {
+    const { data: users, error } = await supabase.from("users").select("id, email, name, role, created_at");
+    if (error) return res.status(500).json({ error: error.message });
+
+    const { data: access } = await supabase.from("user_client_access").select("user_id, clients(slug, name)");
+    const withAccess = users.map(u => ({
+        ...u,
+        clients: u.role === "owner" ? "all" : (access || []).filter(a => a.user_id === u.id).map(a => a.clients),
+    }));
+    res.json(withAccess);
+});
+
+app.post("/api/users", requireOwner, async (req, res) => {
+    const { email, name, clientSlugs } = req.body;
+    if (!email || !name || !Array.isArray(clientSlugs) || !clientSlugs.length) {
+        return res.status(400).json({ error: "email, name, and at least one client are required" });
+    }
+
+    const tempPassword = crypto.randomBytes(9).toString("base64").replace(/[+/=]/g, "").slice(0, 12);
+    const hash = await bcrypt.hash(tempPassword, 10);
+
+    const { data: user, error: userErr } = await supabase.from("users").insert({
+        email, name, role: "staff", password_hash: hash,
+    }).select().single();
+    if (userErr) return res.status(500).json({ error: userErr.message });
+
+    const { data: clients } = await supabase.from("clients").select("id, slug").in("slug", clientSlugs);
+    const accessRows = clients.map(c => ({ user_id: user.id, client_id: c.id }));
+    const { error: accessErr } = await supabase.from("user_client_access").insert(accessRows);
+    if (accessErr) return res.status(500).json({ error: accessErr.message });
+
+    res.json({ ok: true, user, tempPassword });
 });
 
 // Raw B-roll waiting for someone to turn it into a post, scoped to clients
@@ -395,6 +441,95 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
 
     const { data: signed } = await supabase.storage.from("raw-media").createSignedUrl(finishedPath, 3600);
     res.json({ ok: true, url: signed ? signed.signedUrl : null });
+});
+
+// Learning examples -- reference/inspiration videos Josh uploads for Jarvis
+// to actually study (frames + audio), not tied to any one client. Separate
+// bucket and table from raw_media on purpose: this isn't footage to post,
+// it's material to learn from, visible to every logged-in user regardless
+// of which clients they're scoped to.
+const exampleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+
+app.get("/api/examples", requireLogin, async (req, res) => {
+    const { data, error } = await supabase
+        .from("example_media").select("*").order("uploaded_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const withUrls = await Promise.all(data.map(async (row) => {
+        if (!row.storage_path) return { ...row, url: null };
+        const { data: signed } = await supabase.storage
+            .from("learning-examples").createSignedUrl(row.storage_path, 3600);
+        return { ...row, url: signed ? signed.signedUrl : null };
+    }));
+    res.json(withUrls);
+});
+
+app.post("/api/examples/upload", requireLogin, exampleUpload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "no file uploaded" });
+    const isVideo = req.file.mimetype.startsWith("video/");
+    const isImage = req.file.mimetype.startsWith("image/");
+    const isAudio = req.file.mimetype.startsWith("audio/");
+    if (!isVideo && !isImage && !isAudio) return res.status(400).json({ error: "only video, image, or audio files" });
+
+    const ext = path.extname(req.file.originalname) || (isVideo ? ".mp4" : isAudio ? ".m4a" : ".jpg");
+    const storagePath = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+
+    const { error: upErr } = await supabase.storage
+        .from("learning-examples").upload(storagePath, req.file.buffer, { contentType: req.file.mimetype });
+    if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+
+    const { data: row, error: dbErr } = await supabase.from("example_media").insert({
+        storage_path: storagePath,
+        media_type: isVideo ? "video" : isAudio ? "audio" : "image",
+        original_filename: req.file.originalname,
+        uploaded_by: req.session.user.id,
+    }).select().single();
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true, example: row });
+});
+
+// Standing instructions typed directly in -- "use this logo," "stop doing X."
+// No file, so reviewed_at is set immediately: there's nothing for Jarvis to
+// study, the typed text already IS the directive. draftCaption() below pulls
+// every one of these in on every single caption draft, unconditionally.
+app.post("/api/examples/text-note", requireLogin, async (req, res) => {
+    const text = (req.body.text || "").trim();
+    if (!text) return res.status(400).json({ error: "no text provided" });
+
+    const { data: row, error: dbErr } = await supabase.from("example_media").insert({
+        media_type: "text",
+        instruction_text: text,
+        uploaded_by: req.session.user.id,
+        reviewed_at: new Date().toISOString(),
+    }).select().single();
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true, example: row });
+});
+
+app.post("/api/examples/:id/notes", requireLogin, async (req, res) => {
+    const { notes } = req.body;
+    const { error } = await supabase.from("example_media")
+        .update({ notes, reviewed_at: new Date().toISOString() })
+        .eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+});
+
+app.delete("/api/examples/:id", requireLogin, async (req, res) => {
+    const { data: row, error: findErr } = await supabase
+        .from("example_media").select("*").eq("id", req.params.id).single();
+    if (findErr || !row) return res.status(404).json({ error: "not found" });
+
+    if (row.storage_path) {
+        const { error: storageErr } = await supabase.storage.from("learning-examples").remove([row.storage_path]);
+        if (storageErr) return res.status(500).json({ error: "couldn't delete file: " + storageErr.message });
+    }
+
+    const { error: dbErr } = await supabase.from("example_media").delete().eq("id", row.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+    res.json({ ok: true });
 });
 
 const port = process.env.PORT || 3000;

@@ -77,9 +77,11 @@
 <div id="app">
   <div class="topbar">
     <div class="tabs">
-      <button class="tab" id="tab-home" onclick="showTab('home')">Home</button>
+      <button class="tab" id="tab-home" onclick="goHome()">Home</button>
       <button class="tab" id="tab-queue" onclick="clearQueueFilter(); showTab('queue')">Approval Queue</button>
-      <button class="tab" id="tab-broll" onclick="showTab('broll')">B-Roll</button>
+      <button class="tab" id="tab-broll" onclick="goBroll()">B-Roll</button>
+      <button class="tab" id="tab-learning" onclick="showTab('learning')">Learning</button>
+      <button class="tab" id="tab-team" onclick="showTab('team')" style="display:none;">Team</button>
     </div>
     <span style="flex:1;"></span>
     <div class="usermenu">
@@ -107,6 +109,30 @@
     <h2>Raw footage (B-roll)</h2>
     <p style="color:#888; font-size:13px;">Broken out per client — as admin you see all of them.</p>
     <div id="rawMedia"></div>
+  </section>
+
+  <section id="section-learning" style="display:none;">
+    <h2>Learning examples</h2>
+    <p style="color:#888; font-size:13px;">Reference videos or photos you want Jarvis to actually study — not tied to any one client. Jarvis pulls frames and audio and writes up what's working.</p>
+    <input type="file" id="exampleFile" accept="video/*,image/*,audio/*">
+    <button onclick="uploadExample()">Upload</button>
+    <div style="margin-top:12px; padding-top:12px; border-top:1px dashed #ddd;">
+      <p style="color:#888; font-size:13px; margin:0 0 6px;">Or type a standing instruction — "use this logo," "stop doing X." No file needed; this gets pulled into every caption Jarvis drafts from now on.</p>
+      <textarea id="instructionText" rows="2" style="width:100%; max-width:500px; padding:8px; box-sizing:border-box; font-family:inherit;" placeholder="e.g. Never use the word &quot;guys&quot; in captions"></textarea>
+      <button onclick="addTextNote()">Add note</button>
+    </div>
+    <div id="examples" style="margin-top:14px;"></div>
+  </section>
+
+  <section id="section-team" style="display:none;">
+    <h2>Team</h2>
+    <p style="color:#888; font-size:13px;">Add someone and pick which companies they can see. Everyone added here gets staff-level access — scoped only to what you check below, nothing else.</p>
+    <input id="newUserName" placeholder="Full name" style="max-width:300px;">
+    <input id="newUserEmail" type="email" placeholder="Email" style="max-width:300px;">
+    <div id="newUserClients" style="margin:8px 0;"></div>
+    <button onclick="addUser()">Add person</button>
+    <div id="newUserResult" style="margin-top:10px;"></div>
+    <div id="teamList" style="margin-top:18px;"></div>
   </section>
 </div>
 
@@ -147,10 +173,44 @@ function toggleUserMenu() {
 }
 
 function showTab(tab) {
-    ["home", "queue", "broll"].forEach(t => {
+    ["home", "queue", "broll", "learning", "team"].forEach(t => {
         document.getElementById(`section-${t}`).style.display = t === tab ? "block" : "none";
         document.getElementById(`tab-${t}`).classList.toggle("active", t === tab);
     });
+    syncUrl(tab);
+    if (tab === "learning") loadExamples();
+    if (tab === "team") loadTeam();
+}
+
+// Keeps the address bar in sync with whatever's actually on screen, so a
+// browser refresh lands you back on the same tab/company instead of
+// replaying stale state. queueFilterSlug is the one shared "which company
+// am I scoped to" flag -- Queue and B-Roll both respect it so neither one
+// can bleed into a different company once you've drilled into one.
+function syncUrl(tab) {
+    let url = "/";
+    if (tab === "queue") url = queueFilterSlug ? `/?queue=${queueFilterSlug}` : "/?tab=queue";
+    else if (tab === "broll") url = "/?tab=broll";
+    else if (tab === "learning") url = "/?tab=learning";
+    else if (tab === "team") url = "/?tab=team";
+    history.replaceState(null, "", url);
+}
+
+function goHome() {
+    queueFilterSlug = null;
+    showTab("home");
+}
+
+// B-Roll in the top nav always used to show the unfiltered, every-company
+// overview no matter where you clicked it from. If you're already scoped
+// to one company (via its Approval Queue), this now sends you to that same
+// company's real B-Roll page instead of dumping you back into everyone's.
+function goBroll() {
+    if (queueFilterSlug) {
+        location.href = `/client.html?slug=${queueFilterSlug}`;
+    } else {
+        showTab("broll");
+    }
 }
 
 async function showApp() {
@@ -160,10 +220,30 @@ async function showApp() {
     myClients = await (await fetch("/api/clients")).json();
     document.getElementById("avatar").textContent = initials(me.name);
     document.getElementById("who").textContent = `${me.name} (${me.role})`;
-    showTab("home");
     loadHomeCompanies();
     loadPosts();
     loadRawMedia();
+    if (me.role === "owner") {
+        document.getElementById("tab-team").style.display = "";
+    }
+
+    const params = new URLSearchParams(location.search);
+    const queueSlug = params.get("queue");
+    const tabParam = params.get("tab");
+    if (queueSlug && myClients.some(c => c.slug === queueSlug)) {
+        showCompanyQueue(queueSlug);
+    } else if (tabParam === "queue") {
+        clearQueueFilter();
+        showTab("queue");
+    } else if (tabParam === "broll") {
+        showTab("broll");
+    } else if (tabParam === "learning") {
+        showTab("learning");
+    } else if (tabParam === "team" && me.role === "owner") {
+        showTab("team");
+    } else {
+        showTab("home");
+    }
 }
 
 // The admin view: every company at once, not filtered to whichever one is
@@ -429,6 +509,108 @@ async function loadRawMedia() {
 async function approve(id) {
     await fetch(`/api/posts/${id}/approve`, { method: "POST" });
     loadPosts();
+}
+
+async function loadExamples() {
+    const examples = await (await fetch("/api/examples")).json();
+    document.getElementById("examples").innerHTML = examples.length ? examples.map(e => `
+        <div class="card">
+            ${e.media_type === "text"
+                ? `<div style="padding:10px; background:#fff6e0; border:1px solid #f0dca0; border-radius:4px; font-size:14px;"><strong>Standing instruction:</strong> ${e.instruction_text}</div>`
+                : e.url
+                    ? (e.media_type === "video"
+                        ? `<video src="${e.url}" controls style="max-width:220px;"></video>`
+                        : e.media_type === "audio"
+                            ? `<audio src="${e.url}" controls style="width:260px;"></audio>`
+                            : `<img src="${e.url}" style="max-width:220px;">`)
+                    : "<p>(couldn't load media)</p>"}
+            ${e.media_type !== "text" ? `<div class="meta">${e.original_filename || ""} — uploaded ${new Date(e.uploaded_at).toLocaleString()}</div>` : `<div class="meta">added ${new Date(e.uploaded_at).toLocaleString()}</div>`}
+            ${e.media_type !== "text" ? (e.reviewed_at
+                ? `<div style="margin-top:6px; padding:8px; background:#f0f3f1; border-radius:4px; font-size:13px; white-space:pre-wrap;"><strong>Jarvis's notes:</strong> ${e.notes || ""}</div>`
+                : `<div style="margin-top:6px; font-size:12px; color:#888;">Not reviewed yet — ask Jarvis to take a look.</div>`) : ""}
+            <button onclick="deleteExample('${e.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
+        </div>
+    `).join("") : "<p>Nothing uploaded yet.</p>";
+}
+
+async function uploadExample() {
+    const input = document.getElementById("exampleFile");
+    if (!input.files[0]) { alert("Pick a file first."); return; }
+    const form = new FormData();
+    form.append("file", input.files[0]);
+    const res = await fetch("/api/examples/upload", { method: "POST", body: form });
+    if (!res.ok) { alert("Upload failed: " + (await res.json()).error); return; }
+    input.value = "";
+    loadExamples();
+}
+
+async function addTextNote() {
+    const input = document.getElementById("instructionText");
+    const text = input.value.trim();
+    if (!text) { alert("Type something first."); return; }
+    const res = await fetch("/api/examples/text-note", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+    });
+    if (!res.ok) { alert("Couldn't add note: " + (await res.json()).error); return; }
+    input.value = "";
+    loadExamples();
+}
+
+async function deleteExample(id) {
+    if (!confirm("Delete this example for good?")) return;
+    const res = await fetch(`/api/examples/${id}`, { method: "DELETE" });
+    if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
+    loadExamples();
+}
+
+function renderUserClientCheckboxes() {
+    document.getElementById("newUserClients").innerHTML = myClients.map(c => `
+        <label style="margin-right:14px; font-size:13px;">
+            <input type="checkbox" class="newUserClientCb" value="${c.slug}" style="display:inline; width:auto; margin:0 4px 0 0;">
+            ${c.name}
+        </label>
+    `).join("");
+}
+
+async function addUser() {
+    const name = document.getElementById("newUserName").value.trim();
+    const email = document.getElementById("newUserEmail").value.trim();
+    const clientSlugs = Array.from(document.querySelectorAll(".newUserClientCb:checked")).map(cb => cb.value);
+    if (!name || !email || !clientSlugs.length) { alert("Name, email, and at least one company are required."); return; }
+
+    const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, clientSlugs }),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert("Couldn't add: " + data.error); return; }
+
+    document.getElementById("newUserResult").innerHTML = `
+        <div style="padding:10px; background:#e8f3ec; border:1px solid #bcdfc9; border-radius:4px; font-size:13px;">
+            Added. Send these to ${email.replace(/"/g, "&quot;")} yourself — there's no auto-email set up yet:<br>
+            URL: ${location.origin}<br>
+            Temp password: <strong>${data.tempPassword}</strong>
+        </div>`;
+    document.getElementById("newUserName").value = "";
+    document.getElementById("newUserEmail").value = "";
+    document.querySelectorAll(".newUserClientCb").forEach(cb => cb.checked = false);
+    loadTeam();
+}
+
+async function loadTeam() {
+    renderUserClientCheckboxes();
+    const users = await (await fetch("/api/users")).json();
+    document.getElementById("teamList").innerHTML = users.length ? `
+        <h2 style="font-size:15px;">Current access</h2>
+        ${users.map(u => `
+        <div class="card">
+            <strong>${u.name}</strong> (${u.email}) — ${u.role}
+            <div class="meta">${u.clients === "all" ? "sees everything" : (u.clients.length ? u.clients.map(c => c.name).join(", ") : "no companies assigned")}</div>
+        </div>`).join("")}
+    ` : "";
 }
 
 // If a session cookie is already valid, skip straight past the login form.

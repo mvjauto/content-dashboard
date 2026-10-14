@@ -86,6 +86,21 @@ create table user_client_access (
   primary key (user_id, client_id)
 );
 
+-- Reference/inspiration videos Josh uploads for Jarvis to study -- NOT
+-- client B-roll, not tied to any one client's footage. Jarvis extracts
+-- frames + audio from the file in Storage and writes findings into `notes`.
+create table example_media (
+  id uuid primary key default gen_random_uuid(),
+  storage_path text,                    -- path in the "learning-examples" bucket; null for text instructions (no file)
+  media_type text not null check (media_type in ('video','image','audio','text')),
+  original_filename text,
+  instruction_text text,                -- for media_type='text' -- a standing directive typed directly in ("use this logo", "stop doing X"), not Jarvis's own analysis
+  uploaded_by uuid references users(id),
+  notes text,                           -- Jarvis's analysis once reviewed (video/image/audio only)
+  reviewed_at timestamptz,              -- null until Jarvis has actually looked at it; set immediately for text instructions, nothing to study
+  uploaded_at timestamptz not null default now()
+);
+
 insert into clients (slug, name, active) values
   ('811-assist', '811 Assist', true),
   ('axion-pept', 'Axion Pept', true),

@@ -5,22 +5,79 @@
 <title>Raw Footage — Content Dashboard</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; color: #222; }
-  a.back { font-size: 13px; color: #555; text-decoration: none; }
   h1 { font-size: 20px; margin-top: 12px; }
   .card { border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 14px; }
   .card video, .card img { max-width: 120px; border-radius: 4px; display: block; margin-bottom: 8px; }
   .meta { font-size: 12px; color: #888; }
   .caption { margin-top: 6px; }
+
+  .topbar { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #ddd; padding-bottom: 12px; }
+  .tabs { display: flex; gap: 6px; }
+  .tab { background: none; border: 1px solid transparent; border-radius: 6px; padding: 7px 14px; font-size: 14px; color: #555; cursor: pointer; }
+  .tab.active { background: #f0f3f1; border-color: #ddd; color: #222; font-weight: 600; }
+  .usermenu { position: relative; }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; background: #2d6b48; color: white;
+            display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600;
+            cursor: pointer; }
+  .usermenu-dropdown { position: absolute; right: 0; top: 44px; background: white; border: 1px solid #ddd;
+                        border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.08); min-width: 200px; z-index: 10; }
+  .usermenu-dropdown .who { padding: 10px 14px; font-size: 13px; color: #888; border-bottom: 1px solid #eee; }
+  .usermenu-dropdown hr { border: none; border-top: 1px solid #eee; margin: 4px 0; }
+  .usermenu-dropdown button.signout { width: 100%; text-align: left; background: none; border: none; padding: 10px 14px;
+                                       font-size: 13px; cursor: pointer; color: #c0392b; }
 </style>
 </head>
 <body>
 
-<a class="back" href="/">&larr; All clients</a>
+<div class="topbar">
+  <div class="tabs">
+    <button class="tab" id="tab-home" onclick="goHome()">Home</button>
+    <button class="tab" id="tab-queue" onclick="goQueue()">Approval Queue</button>
+    <button class="tab active" id="tab-broll">B-Roll</button>
+  </div>
+  <span style="flex:1;"></span>
+  <div class="usermenu">
+    <div class="avatar" id="avatar" onclick="toggleUserMenu()"></div>
+    <div class="usermenu-dropdown" id="usermenu-dropdown" style="display:none;">
+      <div class="who" id="who"></div>
+      <hr>
+      <button class="signout" onclick="logout()">Sign out</button>
+    </div>
+  </div>
+</div>
+
 <h1 id="title">Raw footage</h1>
 <div id="media"></div>
 
 <script>
 const slug = new URLSearchParams(location.search).get("slug");
+
+function goHome() { location.href = "/"; }
+function goQueue() { location.href = `/?queue=${slug}`; }
+
+function toggleUserMenu() {
+    const el = document.getElementById("usermenu-dropdown");
+    el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+function initials(name) {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+async function logout() {
+    await fetch("/api/logout", { method: "POST" });
+    location.href = "/";
+}
+
+async function loadMe() {
+    const res = await fetch("/api/me");
+    if (!res.ok) return;
+    const me = await res.json();
+    document.getElementById("avatar").textContent = initials(me.name);
+    document.getElementById("who").textContent = `${me.name} (${me.role})`;
+}
 
 async function load() {
     const res = await fetch(`/api/clients/${slug}/raw-media`);
@@ -58,6 +115,7 @@ async function createPost(id) {
     alert("Added to the Approval Queue.");
 }
 
+loadMe();
 load();
 </script>
 
