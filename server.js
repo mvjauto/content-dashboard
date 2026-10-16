@@ -1023,5 +1023,77 @@ app.delete("/api/scheduled-posts/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Organic social publishing via upload-post.com -- the actual "post it live"
+// step that was parked since day one of this build. Built against their
+// real API per their documented behavior, but genuinely untested end to end:
+// there's no UPLOAD_POST_API_KEY configured yet, and none of this can be
+// verified without Josh's own account + a real connected platform profile.
+//
+// Deliberately scheduling-only, never immediate-publish: per upload-post's
+// own documented findings, TikTok specifically can land as a live public
+// post OR a private inbox draft on the exact same clean file, totally
+// unpredictably, with NO API takedown if it goes live wrong. scheduled_date
+// is the one mechanism confirmed to reliably hold rather than fire -- so
+// this route requires one, it will not publish anything the moment it's
+// called. Josh said explicitly tonight: nothing posts without him seeing it
+// land correctly first.
+app.post("/api/scheduled-posts/:id/send-to-upload-post", requireLogin, async (req, res) => {
+    if (!process.env.UPLOAD_POST_API_KEY) {
+        return res.status(501).json({ error: "No upload-post.com API key configured yet -- Josh needs to create an account there and hand over a key before this can run for real." });
+    }
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: sched, error: sErr } = await supabase
+        .from("scheduled_posts").select("*, posts(finished_media_path, edited_media_path, caption_draft, caption_final, raw_media_id)")
+        .eq("id", req.params.id).single();
+    if (sErr || !sched) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(sched.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const mediaPath = sched.posts.finished_media_path || sched.posts.edited_media_path;
+    if (!mediaPath) return res.status(400).json({ error: "this post has no finished video yet -- trim/crop + Finish it first" });
+
+    const { data: account } = await supabase
+        .from("platform_accounts").select("*")
+        .eq("client_id", sched.client_id).eq("platform", sched.platform).maybeSingle();
+    if (!account || !account.upload_post_profile) {
+        return res.status(400).json({ error: `No upload-post profile connected yet for this company's ${sched.platform}. That's a one-time human OAuth step Josh has to do in a browser -- can't be automated.` });
+    }
+
+    const { data: fileBlob, error: dlErr } = await supabase.storage.from("raw-media").download(mediaPath);
+    if (dlErr) return res.status(500).json({ error: "couldn't pull the finished video: " + dlErr.message });
+
+    const caption = sched.posts.caption_final || sched.posts.caption_draft || "";
+    const form = new FormData();
+    form.append("user", account.upload_post_profile);
+    form.append("platform[]", sched.platform);
+    form.append("video", fileBlob, "post.mp4");
+    form.append("title", caption);
+    form.append("scheduled_date", `${sched.scheduled_date}T${sched.scheduled_time}:00`);
+    form.append("timezone", "America/Chicago");
+
+    let result;
+    try {
+        const resp = await fetch("https://api.upload-post.com/api/upload", {
+            method: "POST",
+            headers: { "Authorization": `Apikey ${process.env.UPLOAD_POST_API_KEY}` },
+            body: form,
+        });
+        result = await resp.json();
+    } catch (e) {
+        return res.status(500).json({ error: "upload-post request failed: " + e.message });
+    }
+
+    if (result.error) {
+        await supabase.from("scheduled_posts").update({ upload_post_status: "failed", upload_post_error: result.error }).eq("id", sched.id);
+        return res.status(500).json({ error: result.error });
+    }
+
+    await supabase.from("scheduled_posts")
+        .update({ upload_post_job_id: result.request_id || null, upload_post_status: "scheduled" })
+        .eq("id", sched.id);
+    res.json({ ok: true, result });
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`content-dashboard listening on ${port}`));

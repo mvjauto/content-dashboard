@@ -1065,8 +1065,13 @@ function renderCalGrid() {
             <div style="border:1px solid #ddd; border-radius:4px; min-height:70px; padding:4px; font-size:11px;">
                 <div style="color:#888;">${day}</div>
                 ${items.map(s => `
-                    <div onclick="deleteScheduled('${s.id}')" style="background:#e8f3ec; border-radius:3px; padding:2px 4px; margin-top:2px; cursor:pointer;" title="Click to remove">
-                        ${s.scheduled_time} — ${s.platform}
+                    <div style="background:#e8f3ec; border-radius:3px; padding:2px 4px; margin-top:2px;">
+                        <span onclick="deleteScheduled('${s.id}')" style="cursor:pointer;" title="Click to remove">${s.scheduled_time} — ${s.platform}</span>
+                        ${s.upload_post_status === "scheduled"
+                            ? `<div style="color:#2d6b48; font-size:10px;">✓ sent to upload-post</div>`
+                            : s.upload_post_status === "failed"
+                                ? `<div style="color:#c0392b; font-size:10px;" title="${(s.upload_post_error || "").replace(/"/g,'&quot;')}">✗ failed</div>`
+                                : `<button onclick="event.stopPropagation(); sendToUploadPost('${s.id}')" style="font-size:10px; padding:1px 4px; margin-top:2px;">Send</button>`}
                     </div>
                 `).join("")}
             </div>`;
@@ -1090,6 +1095,14 @@ async function schedulePost() {
     if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
     msg.textContent = "Scheduled.";
     document.querySelectorAll(".calPlatformCb").forEach(cb => cb.checked = false);
+    loadCalendar();
+}
+
+async function sendToUploadPost(id) {
+    if (!confirm("Send this to upload-post.com now? It'll be held for the scheduled date/time, not posted immediately.")) return;
+    const res = await fetch(`/api/scheduled-posts/${id}/send-to-upload-post`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) { alert("Couldn't send: " + data.error); loadCalendar(); return; }
     loadCalendar();
 }
 
