@@ -485,13 +485,16 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     // 576 wide, but the naive probe reported 1024 and sized text for that.
     const { stdout: probeOut } = await execFileAsync(FFPROBE_BIN,
         ["-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height:stream_side_data=rotation",
+         "-show_entries", "stream=width,height,duration:stream_side_data=rotation:format=duration",
          "-of", "json", tmpIn]);
     const probeData = JSON.parse(probeOut);
     const stream = probeData.streams[0];
     const rotation = stream.side_data_list && stream.side_data_list[0] ? stream.side_data_list[0].rotation : 0;
     const rotated90 = Math.abs(rotation) === 90 || Math.abs(rotation) === 270;
     const width = (rotated90 ? stream.height : stream.width) || 1080;
+    // Stream-level duration is sometimes missing (container-dependent) --
+    // fall back to the format-level one, which is always present.
+    const videoDuration = parseFloat(stream.duration || probeData.format.duration);
 
     const fontsize = Math.max(22, Math.min(48, Math.round(width / 16)));
     const maxChars = Math.floor(width / (fontsize * 0.58));
@@ -528,11 +531,16 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
             // the mix at the video's own length rather than running the full
             // length of the music track.
             : `[1:a]volume=0.2[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[aout]`;
+        // -shortest doesn't reliably stop the mux here -- the background
+        // track's audio pad (anull/amix) never gets an EOF tied to the video
+        // stream, so it was encoding the FULL track length regardless of how
+        // long the video actually is. -t with the real probed duration is
+        // the hard, deterministic cutoff; -shortest stays as a backstop.
         ffmpegArgs = [
             "-y", "-i", tmpIn, "-i", bgAudioTmp,
             "-filter_complex", `[0:v]${drawtext}[vout];${audioGraph}`,
             "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-c:a", "aac", "-shortest", tmpOut,
+            "-c:v", "libx264", "-c:a", "aac", "-t", String(videoDuration), "-shortest", tmpOut,
         ];
     } else {
         const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
