@@ -504,16 +504,21 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     // 576 wide, but the naive probe reported 1024 and sized text for that.
     const { stdout: probeOut } = await execFileAsync(FFPROBE_BIN,
         ["-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height,duration:stream_side_data=rotation:format=duration",
+         "-show_entries", "stream=width,height:stream_side_data=rotation",
          "-of", "json", tmpIn]);
     const probeData = JSON.parse(probeOut);
     const stream = probeData.streams[0];
     const rotation = stream.side_data_list && stream.side_data_list[0] ? stream.side_data_list[0].rotation : 0;
     const rotated90 = Math.abs(rotation) === 90 || Math.abs(rotation) === 270;
     const width = (rotated90 ? stream.height : stream.width) || 1080;
-    // Stream-level duration is sometimes missing (container-dependent) --
-    // fall back to the format-level one, which is always present.
-    const videoDuration = parseFloat(stream.duration || probeData.format.duration);
+
+    // Every finished video loops to fill a fixed total length, per Josh
+    // 2026-10-19 -- a 3s clip replays ~7 times back to back rather than
+    // playing once and stopping. -stream_loop on the source input loops
+    // both its video and audio together (so a looped clip's own sync audio
+    // stays in sync through every repeat); the global -t hard-cuts the
+    // whole output at this length regardless of how short the source is.
+    const TARGET_DURATION = 20;
 
     const fontsize = Math.max(22, Math.min(48, Math.round(width / 16)));
     const maxChars = Math.floor(width / (fontsize * 0.58));
@@ -530,11 +535,15 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     // orange -- fits this content specifically) plus a drop shadow, which is
     // the most consistently recommended "produced" look across sources and
     // still passes the "readable on the worst frame" test a flat box can fail.
+    // Vertically centered per Josh 2026-10-19 -- was pinned near the top
+    // (y=h*0.12); text_h is ffmpeg drawtext's own rendered-block-height
+    // expression, so this centers the whole wrapped block regardless of
+    // how many lines it wraps to.
     const HOOK_ACCENT_COLOR = "0xFF6A00"; // construction-cone orange
     const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(wrapped)}':`
         + `fontsize=${fontsize}:fontcolor=white:bordercolor=${HOOK_ACCENT_COLOR}:borderw=5:`
         + `shadowcolor=black@0.7:shadowx=2:shadowy=2:line_spacing=8:`
-        + `x=(w-text_w)/2:y=h*0.12`;
+        + `x=(w-text_w)/2:y=(h-text_h)/2`;
 
     // Four real cases: with/without a background track, muted or not. Once a
     // second input (the background track) is involved, drawtext has to move
@@ -553,17 +562,20 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
         // -shortest doesn't reliably stop the mux here -- the background
         // track's audio pad (anull/amix) never gets an EOF tied to the video
         // stream, so it was encoding the FULL track length regardless of how
-        // long the video actually is. -t with the real probed duration is
-        // the hard, deterministic cutoff; -shortest stays as a backstop.
+        // long the video actually is. -t with a hard duration is the
+        // deterministic cutoff; -shortest stays as a backstop. Only the main
+        // clip loops (-stream_loop on input 0) -- the background track is
+        // typically a full song, already well over TARGET_DURATION long, so
+        // it doesn't need to repeat too.
         ffmpegArgs = [
-            "-y", "-i", tmpIn, "-i", bgAudioTmp,
+            "-y", "-stream_loop", "-1", "-i", tmpIn, "-i", bgAudioTmp,
             "-filter_complex", `[0:v]${drawtext}[vout];${audioGraph}`,
             "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-c:a", "aac", "-t", String(videoDuration), "-shortest", tmpOut,
+            "-c:v", "libx264", "-c:a", "aac", "-t", String(TARGET_DURATION), "-shortest", tmpOut,
         ];
     } else {
         const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
-        ffmpegArgs = ["-y", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", ...audioArgs, tmpOut];
+        ffmpegArgs = ["-y", "-stream_loop", "-1", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", ...audioArgs, "-t", String(TARGET_DURATION), tmpOut];
     }
 
     try {
