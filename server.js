@@ -497,8 +497,9 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     const maxChars = Math.floor(width / (fontsize * 0.58));
     const wrapped = wrapText(overlayText.trim(), maxChars).join("\n");
 
-    // Held for the first 2.5s, matching the reel concepts' "hook, first 2
-    // seconds" spec -- a beat longer so it's actually readable, not a flash.
+    // Held for the full video now, per Josh 2026-10-19 -- was originally
+    // just the first 2.5s matching the reel concepts' "hook, first 2 seconds"
+    // spec, but he wants the text staying up the whole time instead.
     //
     // Style redesigned 2026-10-12 per Josh ("not just a black box, something
     // that stands out") and real research on what actually reads on short-form
@@ -511,7 +512,7 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(wrapped)}':`
         + `fontsize=${fontsize}:fontcolor=white:bordercolor=${HOOK_ACCENT_COLOR}:borderw=5:`
         + `shadowcolor=black@0.7:shadowx=2:shadowy=2:line_spacing=8:`
-        + `x=(w-text_w)/2:y=h*0.12:enable='lt(t,2.5)'`;
+        + `x=(w-text_w)/2:y=h*0.12`;
 
     // Four real cases: with/without a background track, muted or not. Once a
     // second input (the background track) is involved, drawtext has to move
