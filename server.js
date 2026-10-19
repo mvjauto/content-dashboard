@@ -16,7 +16,15 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // ffmpeg-full specifically, not the system "ffmpeg" -- the plain Homebrew
 // ffmpeg formula doesn't ship libfreetype, so it has no drawtext filter.
 // Full path so this doesn't depend on PATH or on Josh's own shell setup.
-const FFMPEG_BIN = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg";
+// Real bug found 2026-10-19: this was hardcoded to the Homebrew path that
+// only exists on Josh's own Mac, so every trim/crop/finish call has been
+// silently crashing (spawn ENOENT) on the actual deployed Render site this
+// whole time -- every test that ever "worked" was against localhost, never
+// against production. Render's own Node environment ships ffmpeg/ffprobe on
+// PATH already (confirmed, not assumed -- see the deploy log check after
+// this fix), so resolve by platform instead of hardcoding one machine's path.
+const FFMPEG_BIN = process.platform === "darwin" ? "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg" : "ffmpeg";
+const FFPROBE_BIN = process.platform === "darwin" ? "/opt/homebrew/opt/ffmpeg-full/bin/ffprobe" : "ffprobe";
 
 const app = express();
 // Render (and most host platforms) terminate TLS at their own proxy and
@@ -475,7 +483,7 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     // coded one. Reading just stream=width here was the root cause of the
     // real overflow bug: a 1024x576-coded, rotate=-90 clip displays at
     // 576 wide, but the naive probe reported 1024 and sized text for that.
-    const { stdout: probeOut } = await execFileAsync("/opt/homebrew/opt/ffmpeg-full/bin/ffprobe",
+    const { stdout: probeOut } = await execFileAsync(FFPROBE_BIN,
         ["-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height:stream_side_data=rotation",
          "-of", "json", tmpIn]);
