@@ -1120,13 +1120,17 @@ function renderCalGrid() {
     ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].forEach(d => {
         cells += `<div style="font-size:11px; color:#888; text-align:center; padding:4px;">${d}</div>`;
     });
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
     for (let i = 0; i < startWeekday; i++) cells += `<div></div>`;
     for (let day = 1; day <= daysInMonth; day++) {
         const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
         const items = byDate[dateStr] || [];
+        const isToday = dateStr === todayStr;
         cells += `
-            <div style="border:1px solid #ddd; border-radius:4px; min-height:70px; padding:4px; font-size:11px;">
-                <div style="color:#888;">${day}</div>
+            <div style="border:${isToday ? "3px solid #FF6A00" : "1px solid #ddd"}; border-radius:4px; min-height:70px; padding:4px; font-size:11px;">
+                <div style="color:${isToday ? "#FF6A00" : "#888"}; font-weight:${isToday ? "bold" : "normal"};">${day}</div>
                 ${items.map(s => `
                     <div style="background:#e8f3ec; border-radius:3px; padding:2px 4px; margin-top:2px;">
                         <span onclick="deleteScheduled('${s.id}')" style="cursor:pointer;" title="Click to remove">${s.scheduled_time} — ${s.platform}</span>
