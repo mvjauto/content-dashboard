@@ -432,6 +432,9 @@ async function loadPosts() {
                     <input type="checkbox" id="mute-${p.id}" checked style="display:inline; width:auto; margin:0 4px 0 0;">
                     Mute audio
                 </label>
+                <select id="bgaudio-${p.id}" style="font-size:12px; margin-top:4px; max-width:260px;">
+                    <option value="">No background music</option>
+                </select>
                 <button onclick="finish('${p.id}')" style="margin-top:6px;">Finish (burn hook onto video)</button>
             </div>` : ""}
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
@@ -447,7 +450,16 @@ async function loadPosts() {
             const video = document.getElementById(`video-${p.id}`);
             video.addEventListener("loadedmetadata", () => initTrimBar(p.id, video.duration));
         }
+        const bgSelect = document.getElementById(`bgaudio-${p.id}`);
+        if (bgSelect) populateBgAudioOptions(bgSelect, p.client_id, p.background_audio_example_id);
     });
+}
+
+async function populateBgAudioOptions(selectEl, clientId, currentId) {
+    const examples = await (await fetch("/api/examples")).json();
+    const audioOnes = examples.filter(e => e.media_type === "audio" && e.client_id === clientId);
+    selectEl.innerHTML = `<option value="">No background music</option>` +
+        audioOnes.map(e => `<option value="${e.id}" ${e.id === currentId ? "selected" : ""}>${e.original_filename || "untitled track"}</option>`).join("");
 }
 
 function initTrimBar(postId, duration) {
@@ -585,11 +597,13 @@ async function cropImage(postId) {
 async function finish(postId) {
     const overlayText = document.getElementById(`hooktext-${postId}`).value;
     const mute = document.getElementById(`mute-${postId}`).checked;
+    const bgSelect = document.getElementById(`bgaudio-${postId}`);
+    const backgroundAudioExampleId = bgSelect ? bgSelect.value : "";
     if (!overlayText.trim()) { alert("Enter the hook text to burn onto the video first."); return; }
     const res = await fetch(`/api/posts/${postId}/finish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overlayText, mute }),
+        body: JSON.stringify({ overlayText, mute, backgroundAudioExampleId }),
     });
     if (!res.ok) { alert("Finish failed: " + (await res.json()).error); return; }
     loadPosts();

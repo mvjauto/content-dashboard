@@ -430,16 +430,40 @@ function wrapText(text, maxChars) {
 // mute (boolean, Josh's per-post choice, not a hardcoded default) strips
 // audio when true; false keeps the clip's original audio track.
 app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
-    const { overlayText, mute } = req.body;
+    const { overlayText, mute, backgroundAudioExampleId } = req.body;
     if (!overlayText || !overlayText.trim()) return res.status(400).json({ error: "overlayText is required" });
 
     const { data: post, error: postErr } = await supabase
         .from("posts").select("*, raw_media(storage_path)").eq("id", req.params.id).single();
     if (postErr || !post) return res.status(404).json({ error: "post not found" });
 
+    // Optional licensed background music, mixed in via ffmpeg -- the track
+    // itself just needs to be sitting in the Learning library (Josh uploads
+    // his own properly-licensed files there, e.g. from Artlist). Scoped to
+    // clients this user can see, same access rule as every other Learning
+    // read, and must actually be an audio-type example, not a video/image/text one.
+    let bgAudioTmp = null;
+    if (backgroundAudioExampleId) {
+        const clients = await clientsVisibleTo(req.session.user);
+        const clientIds = clients.map(c => c.id);
+        const { data: audioEx, error: audioErr } = await supabase
+            .from("example_media").select("*").eq("id", backgroundAudioExampleId).single();
+        if (audioErr || !audioEx) return res.status(404).json({ error: "background audio not found" });
+        if (audioEx.media_type !== "audio") return res.status(400).json({ error: "that Learning item isn't an audio file" });
+        if (!clientIds.includes(audioEx.client_id)) return res.status(403).json({ error: "no access to that company's Learning library" });
+
+        const { data: audioBlob, error: dlAudioErr } = await supabase.storage.from("learning-examples").download(audioEx.storage_path);
+        if (dlAudioErr) return res.status(500).json({ error: "couldn't fetch background audio: " + dlAudioErr.message });
+        bgAudioTmp = path.join(os.tmpdir(), `finish-bgaudio-${Date.now()}.mp3`);
+        fs.writeFileSync(bgAudioTmp, Buffer.from(await audioBlob.arrayBuffer()));
+    }
+
     const sourcePath = post.edited_media_path || post.raw_media.storage_path;
     const { data: fileBlob, error: dlErr } = await supabase.storage.from("raw-media").download(sourcePath);
-    if (dlErr) return res.status(500).json({ error: "couldn't fetch source clip: " + dlErr.message });
+    if (dlErr) {
+        if (bgAudioTmp) fs.unlinkSync(bgAudioTmp);
+        return res.status(500).json({ error: "couldn't fetch source clip: " + dlErr.message });
+    }
 
     const tmpIn = path.join(os.tmpdir(), `finish-in-${Date.now()}.mp4`);
     const tmpOut = path.join(os.tmpdir(), `finish-out-${Date.now()}.mp4`);
@@ -481,13 +505,39 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
         + `shadowcolor=black@0.7:shadowx=2:shadowy=2:line_spacing=8:`
         + `x=(w-text_w)/2:y=h*0.12:enable='lt(t,2.5)'`;
 
-    const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
+    // Four real cases: with/without a background track, muted or not. Once a
+    // second input (the background track) is involved, drawtext has to move
+    // into a -filter_complex graph with explicit labeled outputs -- can't mix
+    // a plain -vf with a second -i the simple way the no-track case used.
+    let ffmpegArgs;
+    if (bgAudioTmp) {
+        const audioGraph = mute
+            // Muted original + background track as the only audio.
+            ? `[1:a]anull[aout]`
+            // Original audio kept, background mixed in underneath at reduced
+            // volume so it doesn't bury spoken audio -- duration=first stops
+            // the mix at the video's own length rather than running the full
+            // length of the music track.
+            : `[1:a]volume=0.2[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[aout]`;
+        ffmpegArgs = [
+            "-y", "-i", tmpIn, "-i", bgAudioTmp,
+            "-filter_complex", `[0:v]${drawtext}[vout];${audioGraph}`,
+            "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-c:a", "aac", "-shortest", tmpOut,
+        ];
+    } else {
+        const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
+        ffmpegArgs = ["-y", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", ...audioArgs, tmpOut];
+    }
+
     try {
-        await execFileAsync(FFMPEG_BIN, ["-y", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", ...audioArgs, tmpOut]);
+        await execFileAsync(FFMPEG_BIN, ffmpegArgs);
     } catch (e) {
         fs.unlinkSync(tmpIn);
+        if (bgAudioTmp) fs.unlinkSync(bgAudioTmp);
         return res.status(500).json({ error: "ffmpeg failed: " + e.message });
     }
+    if (bgAudioTmp) fs.unlinkSync(bgAudioTmp);
 
     const finishedPath = `${post.client_id}/finished/${post.id}.mp4`;
     const { error: upErr } = await supabase.storage
@@ -497,7 +547,7 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
 
     await supabase.from("posts")
-        .update({ finished_media_path: finishedPath, overlay_text: overlayText.trim() })
+        .update({ finished_media_path: finishedPath, overlay_text: overlayText.trim(), background_audio_example_id: backgroundAudioExampleId || null })
         .eq("id", post.id);
 
     const { data: signed } = await supabase.storage.from("raw-media").createSignedUrl(finishedPath, 3600);
