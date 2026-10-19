@@ -7,11 +7,29 @@ const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
 const express = require("express");
 const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
+const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
 const multer = require("multer");
 const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+
+// Sessions used to live in plain server memory (express-session's default
+// store) -- fine on a laptop, broken here: Render's free plan spins the
+// service down after 15 min idle, and every manual deploy (constant, since
+// there's still no GitHub webhook) restarts the process too. Either one
+// wiped every logged-in session with no warning. Backing sessions with the
+// same Supabase Postgres database already in use fixes that -- logins now
+// survive restarts and deploys. Same pooler connection run-migration.js uses.
+const sessionPool = new Pool({
+    host: "aws-0-us-east-1.pooler.supabase.com",
+    port: 6543,
+    user: "postgres.bfutcalcoegtdtbnpysy",
+    password: process.env.DB_PASS,
+    database: "postgres",
+    ssl: { rejectUnauthorized: false },
+});
 
 // ffmpeg-full specifically, not the system "ffmpeg" -- the plain Homebrew
 // ffmpeg formula doesn't ship libfreetype, so it has no drawtext filter.
@@ -35,6 +53,7 @@ app.set("trust proxy", 1);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 app.use(session({
+    store: new pgSession({ pool: sessionPool, createTableIfMissing: true }),
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
