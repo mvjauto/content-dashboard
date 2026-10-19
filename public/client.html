@@ -105,8 +105,27 @@ async function load() {
                 ? `<button onclick="attachClip('${m.id}')" style="margin-top:8px;">Attach to concept</button>`
                 : `<button onclick="createPost('${m.id}')" style="margin-top:8px;">Create Post</button>
                    <button onclick="del('${m.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>`}
+            ${m.url ? `<button onclick="downloadMedia('${m.url}', '${m.media_type}', '${m.id}')" style="margin-top:8px;">Download</button>` : ""}
         </div>
     `).join("") : "<p>Nothing here yet.</p>";
+}
+
+async function downloadMedia(url, mediaType, id) {
+    // A plain <a download> is ignored cross-origin (the signed URL points at
+    // Supabase's own domain, not this one), so pull the file as a blob and
+    // download that instead -- works regardless of origin.
+    const res = await fetch(url);
+    if (!res.ok) { alert("Couldn't download that file."); return; }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const ext = mediaType === "video" ? "mp4" : "jpg";
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = `${slug}-${id}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
 }
 
 async function del(id) {
