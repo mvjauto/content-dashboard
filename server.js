@@ -1147,6 +1147,14 @@ app.post("/api/scheduled-posts/:id/send-to-upload-post", requireLogin, async (re
         .eq("id", req.params.id).single();
     if (sErr || !sched) return res.status(404).json({ error: "not found" });
     if (!clientIds.includes(sched.client_id)) return res.status(403).json({ error: "no access to this company" });
+    // Real bug caught 2026-10-20: nothing stopped this route from being
+    // called twice for the same scheduled post -- it fired an actual
+    // duplicate live post to 811 Assist's real Facebook page. Once a send
+    // has genuinely succeeded, refuse to resend rather than hitting
+    // upload-post.com's API again.
+    if (sched.upload_post_status === "scheduled") {
+        return res.status(409).json({ error: "This was already sent successfully -- refusing to send it again. Delete the scheduled entry and re-add it if you really need to resend." });
+    }
 
     const mediaPath = sched.posts.finished_media_path || sched.posts.edited_media_path;
     if (!mediaPath) return res.status(400).json({ error: "this post has no finished video yet -- trim/crop + Finish it first" });
