@@ -268,6 +268,83 @@ app.delete("/api/raw-media/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Caption-drafting automation. Pulls real, live context for the client --
+// recent human edits to past AI drafts (the learning-loop signal),
+// standing text instructions from that client's Learning tab, plus the
+// shared research and that client's marketing-plan text from
+// caption_context -- and asks Claude directly for a draft. caption_context
+// is DB-backed specifically so updating the research/marketing-plan text
+// later never needs a code change or a Render redeploy, just an update to
+// that table. Calls the Anthropic API directly (not the `claude` CLI --
+// this runs on Render, which has no CLI/login, unlike the WhatsApp bot
+// which runs locally). Never throws past the create-post route -- a
+// drafting failure should never block creating the post itself; it just
+// leaves caption_draft null, same as before this existed.
+async function draftCaption(clientId, rawMedia) {
+    const [{ data: context }, { data: textInstructions }, { data: editHistory }] = await Promise.all([
+        supabase.from("caption_context").select("category, content").or(`client_id.is.null,client_id.eq.${clientId}`),
+        supabase.from("example_media").select("instruction_text").eq("client_id", clientId).eq("media_type", "text"),
+        supabase.from("caption_edits").select("ai_draft, human_final, posts!inner(client_id)")
+            .eq("posts.client_id", clientId).order("edited_at", { ascending: false }).limit(10),
+    ]);
+
+    const contextBlock = (context || []).map(c => `[${c.category}]\n${c.content}`).join("\n\n");
+    const instructionsBlock = (textInstructions || []).map(t => `- ${t.instruction_text}`).join("\n") || "(none on file)";
+    const historyBlock = (editHistory || []).length
+        ? editHistory.map(e => `AI drafted: "${e.ai_draft}"\nHuman changed it to: "${e.human_final}"`).join("\n\n")
+        : "(no edit history yet for this client -- no prior corrections to learn from)";
+
+    const prompt = `You are drafting a social media caption for a real client's content dashboard. Write ONE caption, ready to post as-is.
+
+Reference material for this client and in general (follow it -- it reflects real research and real past correction patterns, not generic advice):
+${contextBlock}
+
+Standing instructions this client has given for every caption going forward:
+${instructionsBlock}
+
+Real examples of this client's own past corrections -- notice the pattern and match their actual voice, not a generic one:
+${historyBlock}
+
+Raw footage context: this is a ${rawMedia.media_type}${rawMedia.caption_raw ? `, originally sent with this note: "${rawMedia.caption_raw}"` : ""}.
+
+Reply with ONLY the caption text itself -- no preamble, no quotation marks around it, no explanation.`;
+
+    try {
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+                "x-api-key": process.env.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({
+                model: "claude-haiku-5-5",
+                max_tokens: 1024,
+                // Haiku 5.5 runs adaptive thinking by default, which would
+                // otherwise eat the whole token budget on a "thinking" block
+                // before ever writing the caption (hit this for real in
+                // testing -- content[0] came back as an empty thinking
+                // block, stop_reason "max_tokens", no text at all). A
+                // caption is short and doesn't need reasoning, so disable it.
+                thinking: { type: "disabled" },
+                messages: [{ role: "user", content: prompt }],
+            }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            console.error("caption draft API error:", data);
+            return null;
+        }
+        // Find the actual text block by type rather than assuming
+        // content[0] -- thinking/other block types can sort first.
+        const textBlock = (data.content || []).find(b => b.type === "text");
+        return (textBlock && textBlock.text || "").trim() || null;
+    } catch (e) {
+        console.error("caption draft failed:", e.message);
+        return null;
+    }
+}
+
 // Turns a raw B-roll clip into an actual reviewable post. Generic across
 // every client and every media type on purpose -- Josh was explicit that
 // trim/crop/etc. have to be the same tool everywhere, not special-cased per
@@ -282,10 +359,12 @@ app.post("/api/raw-media/:id/create-post", requireLogin, async (req, res) => {
     if (findErr || !row) return res.status(404).json({ error: "not found" });
     if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this client" });
 
+    const caption_draft = await draftCaption(row.client_id, row);
+
     const { data: post, error: insertErr } = await supabase.from("posts").insert({
         client_id: row.client_id,
         raw_media_id: row.id,
-        caption_draft: null,
+        caption_draft,
         status: "needs_review",
     }).select().single();
     if (insertErr) return res.status(500).json({ error: insertErr.message });

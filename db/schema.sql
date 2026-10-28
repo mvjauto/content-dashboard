@@ -141,3 +141,20 @@ insert into clients (slug, name, active) values
   ('axion-pept', 'Axion Pept', true),
   ('am-underground', 'AM Underground', true),
   ('mvj-auto-sales', 'MVJ Auto Sales', false);
+
+-- Added 2026-10-28, live DB (not part of the original schema.sql run --
+-- applied directly via psql, documented here to keep this file matching
+-- the real live schema). Feeds caption-drafting automation: editable
+-- reference text pulled in on every draft without needing a code
+-- change/redeploy. client_id null = shared across every client (e.g. the
+-- general content-performance research); a non-null client_id scopes it
+-- to just that client (e.g. that client's own marketing plan). category is
+-- a free-form label ('performance_learnings', 'marketing_plan', ...) so
+-- more categories can be added later without a schema change.
+create table caption_context (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references clients(id) on delete cascade,  -- null = global/shared
+  category text not null,
+  content text not null,
+  updated_at timestamptz not null default now()
+);
