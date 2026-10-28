@@ -1047,6 +1047,58 @@ app.post("/api/concepts/:id/pick-footage", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// The bridge Josh asked for 2026-10-28: Concepts (idea + attached footage)
+// previously dead-ended there -- nothing pushed a concept into the real
+// approval/trim/caption/schedule pipeline, which only ever reads from
+// raw_media. Rather than special-case posts to also read from the
+// concept-media bucket, this copies the concept's video into raw-media as
+// a real raw_media row first, matching Josh's standing "same tool
+// everywhere" rule -- trim/crop/finish/caption-drafting all already assume
+// a post traces back to a raw_media row, so this reuses every one of them
+// unmodified instead of building a second code path.
+app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data: concept, error: cErr } = await supabase
+        .from("concepts").select("*").eq("id", req.params.id).single();
+    if (cErr || !concept) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
+    if (!concept.matched_video_path) return res.status(400).json({ error: "attach a video to this concept first" });
+
+    const { data: fileBlob, error: dlErr } = await supabase.storage
+        .from("concept-media").download(concept.matched_video_path);
+    if (dlErr) return res.status(500).json({ error: "couldn't pull the concept's video: " + dlErr.message });
+
+    const ext = path.extname(concept.matched_video_path) || (concept.matched_media_type === "image" ? ".jpg" : ".mp4");
+    const storagePath = `${concept.client_id}/from-concept-${concept.id}-${Date.now()}${ext}`;
+    const buffer = Buffer.from(await fileBlob.arrayBuffer());
+    const { error: upErr } = await supabase.storage
+        .from("raw-media").upload(storagePath, buffer, { contentType: fileBlob.type, upsert: true });
+    if (upErr) return res.status(500).json({ error: "copy into raw media failed: " + upErr.message });
+
+    const { data: rawRow, error: rawErr } = await supabase.from("raw_media").insert({
+        client_id: concept.client_id,
+        storage_path: storagePath,
+        media_type: concept.matched_media_type || "video",
+        source: "concept",
+        caption_raw: concept.text,
+    }).select().single();
+    if (rawErr) return res.status(500).json({ error: rawErr.message });
+
+    const caption_draft = await draftCaption(concept.client_id, rawRow);
+
+    const { data: post, error: insertErr } = await supabase.from("posts").insert({
+        client_id: concept.client_id,
+        raw_media_id: rawRow.id,
+        caption_draft,
+        status: "needs_review",
+    }).select().single();
+    if (insertErr) return res.status(500).json({ error: insertErr.message });
+
+    res.json({ ok: true, post, raw_media: rawRow });
+});
+
 // Durable context baked into the deployed code rather than read from Josh's
 // vault -- the vault only exists on his own Mac, Render can't see it (same
 // lesson as the transcription bug). These are condensed, faithful copies of

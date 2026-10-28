@@ -819,7 +819,8 @@ async function loadConcepts() {
                 ? `${c.matched_media_type === "image"
                     ? `<img src="${c.url}" style="max-width:220px; display:block; margin:8px 0;">`
                     : `<video src="${c.url}" controls style="max-width:220px; display:block; margin:8px 0;"></video>`}
-                   <div class="meta">attached (${c.matched_video_source})</div>`
+                   <div class="meta">attached (${c.matched_video_source})</div>
+                   <button onclick="createPostFromConcept('${c.id}')" style="margin-top:6px;">Create post from this</button>`
                 : `<div style="margin-top:8px;">
                     <input type="file" accept="video/*" id="conceptVideoFile-${c.id}" style="display:block; margin-bottom:6px;">
                     <button onclick="uploadConceptVideo('${c.id}')">Upload video for this</button>
@@ -968,6 +969,14 @@ async function pickFootage(conceptId, pixabayId, downloadUrl) {
     });
     if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
     loadConcepts();
+}
+
+async function createPostFromConcept(conceptId) {
+    const msg = document.getElementById(`conceptMsg-${conceptId}`);
+    msg.textContent = "Creating post and drafting a caption...";
+    const res = await fetch(`/api/concepts/${conceptId}/create-post`, { method: "POST" });
+    if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
+    msg.textContent = "Done -- sitting in the Queue tab now, ready to review.";
 }
 
 let footageRecorder = null;
