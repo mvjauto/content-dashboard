@@ -1068,7 +1068,7 @@ async function loadCalendar() {
                 ${p.media_url
                     ? ((p.raw_media && p.raw_media.media_type === "image")
                         ? `<img src="${p.media_url}" style="width:132px; display:block; border-radius:3px;">`
-                        : `<video src="${p.media_url}" style="width:132px; display:block; border-radius:3px;" muted></video>`)
+                        : `<video src="${p.media_url}" controls style="width:132px; display:block; border-radius:3px;" onclick="event.stopPropagation()"></video>`)
                     : `<div style="width:132px; height:80px; background:#f0f0f0; border-radius:3px;"></div>`}
                 <div style="font-size:11px; color:#888; margin-top:3px; max-height:30px; overflow:hidden;">${(p.caption_draft || p.caption_final || "(no caption)").slice(0, 50)}</div>
             </div>`).join("")
