@@ -268,6 +268,51 @@ app.delete("/api/raw-media/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Shared helper for every Claude call this server makes. Calls the
+// Anthropic API directly over HTTPS -- NOT the `claude` CLI. This server
+// runs on Render, which has no CLI installed and no login profile, unlike
+// the WhatsApp bot (which runs locally on Josh's Mac and can shell out to
+// the CLI for exactly that reason). Three call sites in this file used to
+// shell out to the CLI anyway and were real, latent production bugs --
+// draftCaption (fixed 2026-10-28), deriveSearchKeywords and
+// /api/concepts/generate (both fixed in the same pass once the first one
+// surfaced the pattern). Haiku 5.5 runs adaptive thinking by default,
+// which silently eats the whole max_tokens budget on a "thinking" block
+// before writing any real output (hit this for real in testing --
+// content[0] came back as an empty thinking block, stop_reason
+// "max_tokens", no text at all) -- disabled here for every caller, since
+// none of these tasks need reasoning. Returns null on any failure rather
+// than throwing, so a drafting/generation hiccup never takes down the
+// route that called it.
+async function callClaude(prompt, maxTokens = 1024) {
+    try {
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+                "x-api-key": process.env.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({
+                model: "claude-haiku-5-5",
+                max_tokens: maxTokens,
+                thinking: { type: "disabled" },
+                messages: [{ role: "user", content: prompt }],
+            }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            console.error("Claude call failed:", data);
+            return null;
+        }
+        const textBlock = (data.content || []).find(b => b.type === "text");
+        return (textBlock && textBlock.text || "").trim() || null;
+    } catch (e) {
+        console.error("Claude call failed:", e.message);
+        return null;
+    }
+}
+
 // Caption-drafting automation. Pulls real, live context for the client --
 // recent human edits to past AI drafts (the learning-loop signal),
 // standing text instructions from that client's Learning tab, plus the
@@ -309,40 +354,7 @@ Raw footage context: this is a ${rawMedia.media_type}${rawMedia.caption_raw ? `,
 
 Reply with ONLY the caption text itself -- no preamble, no quotation marks around it, no explanation.`;
 
-    try {
-        const resp = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-                "x-api-key": process.env.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            body: JSON.stringify({
-                model: "claude-haiku-5-5",
-                max_tokens: 1024,
-                // Haiku 5.5 runs adaptive thinking by default, which would
-                // otherwise eat the whole token budget on a "thinking" block
-                // before ever writing the caption (hit this for real in
-                // testing -- content[0] came back as an empty thinking
-                // block, stop_reason "max_tokens", no text at all). A
-                // caption is short and doesn't need reasoning, so disable it.
-                thinking: { type: "disabled" },
-                messages: [{ role: "user", content: prompt }],
-            }),
-        });
-        const data = await resp.json();
-        if (!resp.ok) {
-            console.error("caption draft API error:", data);
-            return null;
-        }
-        // Find the actual text block by type rather than assuming
-        // content[0] -- thinking/other block types can sort first.
-        const textBlock = (data.content || []).find(b => b.type === "text");
-        return (textBlock && textBlock.text || "").trim() || null;
-    } catch (e) {
-        console.error("caption draft failed:", e.message);
-        return null;
-    }
+    return await callClaude(prompt, 1024);
 }
 
 // Turns a raw B-roll clip into an actual reviewable post. Generic across
@@ -959,20 +971,14 @@ app.post("/api/concepts/:id/attach-raw-media", requireLogin, async (req, res) =>
 // Turns a concept's hook text (often a narrative headline, not a literal
 // visual description -- "The Locate Ticket That Never Got Called" isn't
 // something a stock library can search on) into real search keywords.
-// Same claude-CLI pattern as the WhatsApp bot's translation, cheap tier.
+// Fixed 2026-10-28: used to shell out to the `claude` CLI, same real bug
+// as draftCaption had -- see callClaude's comment.
 async function deriveSearchKeywords(conceptText) {
     const prompt = `Extract 3-6 concise, literal, visual search keywords for finding stock video footage that matches this video concept. Think about what would actually be ON SCREEN, not the headline/angle. Respond with ONLY the keywords, space-separated, nothing else -- no explanation, no punctuation beyond spaces.
 
 Concept: "${conceptText}"`;
-    try {
-        const { stdout } = await execFileAsync("claude", [
-            "-p", prompt, "--output-format", "json", "--permission-prompts", "none", "--model", "claude-haiku-5-5",
-        ], { cwd: "/Users/h/my-agent", encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 20000 });
-        const parsed = JSON.parse(stdout.trim().split("\n").pop());
-        return (parsed.result || "").trim();
-    } catch (e) {
-        return conceptText; // fall back to the raw text rather than fail the whole search
-    }
+    const result = await callClaude(prompt, 256);
+    return result || conceptText; // fall back to the raw text rather than fail the whole search
 }
 
 // Search only -- returns candidates, doesn't download or attach anything.
@@ -1099,44 +1105,35 @@ app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
     res.json({ ok: true, post, raw_media: rawRow });
 });
 
-// Durable context baked into the deployed code rather than read from Josh's
-// vault -- the vault only exists on his own Mac, Render can't see it (same
-// lesson as the transcription bug). These are condensed, faithful copies of
-// what's already written in the vault's research notes; update both places
-// together if the source material changes.
-const SHARED_PERFORMANCE_LEARNINGS = `The first ~2 seconds decide whether someone keeps watching -- bold claims, questions, and "did you know" framing outperform generic openers. Watch time and completion are the top-weighted ranking signals on Instagram and TikTok, not likes -- shares/saves outweigh likes too. Short wins: most high performers land in the 20-40s range. For trades content specifically: real crew/jobsite footage consistently beats anything polished or stock, before-and-afters and problem-then-fix narratives perform well. Numbered-list hooks ("5 Things That Actually Cause X") are a strong, proven format for this account -- but a hook that never resolves on-screen (pure "check the caption" payoff) fights against watch-time being the top signal.`;
-
-const CLIENT_MARKETING_CONTEXT = {
-    "811-assist": `811 Assist sells certainty that you're covered, not ticket-management software -- the relief of being able to prove what you knew and when, so a crew member isn't eating the cost of an unmarked line. Emotional subject of content: the field crew. Actual buyer: the business owner/office manager worried about liability exposure. Real angles already validated: cost-of-damage stats (CGA's $83B/year figure made personal), the "86% of damage has 3 root causes" DIRT data (no ticket / invalid ticket / incorrect ticket), industry-neglect framing (conference spending vs. tool spending), and honest case-study angles. Always point toward the idea of proof/certainty, never generic "sign up" language.`,
-    "axion-pept": `Axion Pept sells trust and verification in a category where generic "third-party tested" claims are common and often thin. Real validated angles: named-lab, lot-number-specific COA verification (the actual differentiator competitors lack), responsiveness to verification requests, and the loyalty/subscription gap nobody in the category has filled. HARD COMPLIANCE RULE, never break it: research-use framing only -- zero dosing-for-consumer language, zero before/after claims, zero therapeutic or performance claims, nothing implying human use. This is the single biggest compliance risk in this category (FDA attention specifically targets coded consumer-use language), so every concept must read as "how to evaluate a supplier," never "what this does for you."`,
-};
-
-// Pulls durable context (above) + this client's standing Learning
-// instructions (database, so it works from Render regardless of who's
-// logged in) + existing concepts (to avoid writing duplicates), then asks
-// Claude for N new ones and inserts them for real -- same automated
-// pattern as translation and the email check, cheap Haiku tier.
+// Pulls real, live context for the client -- caption_context (same table
+// draftCaption reads, see its comment above), this client's standing
+// Learning-tab instructions, and existing concepts (to avoid writing
+// duplicates) -- then asks Claude for N new ones and inserts them for real.
 app.post("/api/concepts/generate", requireLogin, async (req, res) => {
     const client = await resolveAllowedClient(req.session.user, req.body.clientId);
     if (!client) return res.status(400).json({ error: "pick a valid company" });
     const count = Math.min(Math.max(parseInt(req.body.count, 10) || 5, 1), 12);
 
-    const { data: instructions } = await supabase.from("example_media")
-        .select("instruction_text").eq("client_id", client.id).eq("media_type", "text");
-    const { data: existing } = await supabase.from("concepts")
-        .select("text").eq("client_id", client.id);
+    // caption_context, not the old hardcoded CLIENT_MARKETING_CONTEXT/
+    // SHARED_PERFORMANCE_LEARNINGS constants -- those were a second,
+    // drifting copy of the exact same reference text draftCaption already
+    // reads from the DB. Consolidated 2026-10-28 while fixing the CLI bug
+    // below, same reasoning Josh gave for making caption_context DB-backed
+    // in the first place: one source of truth, editable without a redeploy.
+    const [{ data: context }, { data: instructions }, { data: existing }] = await Promise.all([
+        supabase.from("caption_context").select("category, content").or(`client_id.is.null,client_id.eq.${client.id}`),
+        supabase.from("example_media").select("instruction_text").eq("client_id", client.id).eq("media_type", "text"),
+        supabase.from("concepts").select("text").eq("client_id", client.id),
+    ]);
 
-    const marketingContext = CLIENT_MARKETING_CONTEXT[client.slug] || "(no dedicated marketing plan written yet for this company -- stay general and factual.)";
+    const contextBlock = (context || []).map(c => `[${c.category}]\n${c.content}`).join("\n\n") || "(no reference material on file yet for this company.)";
     const standingInstructions = (instructions || []).map(i => `- ${i.instruction_text}`).join("\n") || "(none yet)";
     const existingHooks = (existing || []).map(c => `- ${c.text.slice(0, 80)}`).join("\n") || "(none yet)";
 
     const prompt = `You're writing ${count} new short-form video hook/concept ideas for ${client.name}'s social content. Each one should be a single paragraph: a specific, curiosity-driven hook line plus a one-sentence description of the concept/angle. Ground every idea in the real context below -- don't invent generic marketing fluff.
 
-What's proven to work on social generally:
-${SHARED_PERFORMANCE_LEARNINGS}
-
-This company's actual marketing/brand context:
-${marketingContext}
+Reference material for this company and in general:
+${contextBlock}
 
 Standing rules this company has set (never violate these):
 ${standingInstructions}
@@ -1146,16 +1143,9 @@ ${existingHooks}
 
 Respond with ONLY the ${count} new concepts, one per line, nothing else -- no numbering, no headers, no explanation.`;
 
-    let lines;
-    try {
-        const { stdout } = await execFileAsync("claude", [
-            "-p", prompt, "--output-format", "json", "--permission-prompts", "none", "--model", "claude-haiku-5-5",
-        ], { cwd: "/Users/h/my-agent", encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 45000 });
-        const parsed = JSON.parse(stdout.trim().split("\n").pop());
-        lines = (parsed.result || "").trim().split("\n").map(l => l.trim()).filter(Boolean);
-    } catch (e) {
-        return res.status(500).json({ error: "generation failed: " + e.message });
-    }
+    const result = await callClaude(prompt, 4096);
+    if (!result) return res.status(500).json({ error: "generation failed -- no response from Claude" });
+    const lines = result.split("\n").map(l => l.trim()).filter(Boolean);
 
     const inserted = [];
     for (const text of lines) {
