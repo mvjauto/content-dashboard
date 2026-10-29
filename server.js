@@ -460,6 +460,31 @@ app.get("/api/posts", requireLogin, async (req, res) => {
     res.json(withUrls);
 });
 
+// Delete a post outright -- the raw clip in raw_media is untouched (it's the
+// reusable B-roll bin), only this post's own edited/finished cuts go, since
+// nothing else points at those paths. scheduled_posts/caption_edits rows for
+// it are removed by the DB's own "on delete cascade", not here.
+app.delete("/api/posts/:id", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data: row, error: findErr } = await supabase
+        .from("posts").select("*").eq("id", req.params.id).single();
+    if (findErr || !row) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const ownPaths = [row.edited_media_path, row.finished_media_path].filter(Boolean);
+    if (ownPaths.length) {
+        const { error: storageErr } = await supabase.storage.from("raw-media").remove(ownPaths);
+        if (storageErr) return res.status(500).json({ error: "couldn't delete file: " + storageErr.message });
+    }
+
+    const { error: dbErr } = await supabase.from("posts").delete().eq("id", row.id);
+    if (dbErr) return res.status(500).json({ error: "couldn't delete record: " + dbErr.message });
+
+    res.json({ ok: true });
+});
+
 // Approve a draft -- logs who approved it, flips status, still doesn't
 // publish on its own; the scheduler/publisher is a separate follow-up piece.
 app.post("/api/posts/:id/approve", requireLogin, async (req, res) => {

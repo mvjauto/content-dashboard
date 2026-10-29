@@ -185,6 +185,10 @@
     <div style="margin-top:20px; padding-top:14px; border-top:1px dashed #ddd;">
       <h3 style="font-size:14px; margin-bottom:8px;">Schedule a post</h3>
       <div id="calPostGrid" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;"></div>
+      <div style="margin-bottom:10px;">
+        <button onclick="toggleCalArchived()" id="calArchivedToggle" style="font-size:12px; background:none; border:1px solid #ccc; border-radius:4px; padding:4px 10px; cursor:pointer;">Show already-scheduled posts</button>
+        <div id="calArchivedGrid" style="display:none; flex-wrap:wrap; gap:8px; margin-top:8px; opacity:0.6;"></div>
+      </div>
       <select id="calDate" style="margin-right:6px;"></select>
       <select id="calTime" style="margin-right:6px;"></select>
       <div style="margin:8px 0;">
@@ -1074,25 +1078,52 @@ async function loadCalendar() {
 
     const client = myClients.find(c => c.slug === slug);
     const posts = client ? await (await fetch("/api/posts")).json() : [];
-    const eligible = posts.filter(p => p.client_id === (client ? client.id : null) && (p.status === "approved" || p.finished_media_path));
+    const usedPostIds = new Set(calScheduled.map(s => s.post_id));
+    const candidates = posts.filter(p => p.client_id === (client ? client.id : null) && (p.status === "approved" || p.finished_media_path));
+    const eligible = candidates.filter(p => !usedPostIds.has(p.id));
+    const archived = candidates.filter(p => usedPostIds.has(p.id));
     calSelectedPostId = null;
+
+    const cardHtml = (p, selectable) => `
+        <div class="calPostCard" data-post-id="${p.id}" ${selectable ? `onclick="selectCalPost('${p.id}')"` : ""}
+             style="border:2px solid #ddd; border-radius:4px; padding:4px; ${selectable ? "cursor:pointer;" : ""} width:140px;">
+            ${p.media_url
+                ? ((p.raw_media && p.raw_media.media_type === "image")
+                    ? `<img src="${p.media_url}" style="width:132px; display:block; border-radius:3px;">`
+                    : `<video src="${p.media_url}" controls style="width:132px; display:block; border-radius:3px;" onclick="event.stopPropagation()"></video>`)
+                : `<div style="width:132px; height:80px; background:#f0f0f0; border-radius:3px;"></div>`}
+            <div style="font-size:11px; color:#888; margin-top:3px; max-height:30px; overflow:hidden;">${(p.caption_draft || p.caption_final || "(no caption)").slice(0, 50)}</div>
+            <button onclick="event.stopPropagation(); deleteCalPost('${p.id}')" style="margin-top:4px; font-size:11px; padding:2px 6px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; cursor:pointer;">Delete</button>
+        </div>`;
+
     const grid = document.getElementById("calPostGrid");
     grid.innerHTML = eligible.length
-        ? eligible.map(p => `
-            <div class="calPostCard" data-post-id="${p.id}" onclick="selectCalPost('${p.id}')"
-                 style="border:2px solid #ddd; border-radius:4px; padding:4px; cursor:pointer; width:140px;">
-                ${p.media_url
-                    ? ((p.raw_media && p.raw_media.media_type === "image")
-                        ? `<img src="${p.media_url}" style="width:132px; display:block; border-radius:3px;">`
-                        : `<video src="${p.media_url}" controls style="width:132px; display:block; border-radius:3px;" onclick="event.stopPropagation()"></video>`)
-                    : `<div style="width:132px; height:80px; background:#f0f0f0; border-radius:3px;"></div>`}
-                <div style="font-size:11px; color:#888; margin-top:3px; max-height:30px; overflow:hidden;">${(p.caption_draft || p.caption_final || "(no caption)").slice(0, 50)}</div>
-            </div>`).join("")
+        ? eligible.map(p => cardHtml(p, true)).join("")
         : `<div style="color:#888; font-size:13px;">No approved/finished posts for this company yet</div>`;
+
+    const archivedGrid = document.getElementById("calArchivedGrid");
+    archivedGrid.innerHTML = archived.length
+        ? archived.map(p => cardHtml(p, false)).join("")
+        : `<div style="color:#888; font-size:13px;">None yet</div>`;
+    document.getElementById("calArchivedToggle").textContent = `${archivedGrid.style.display === "none" ? "Show" : "Hide"} already-scheduled posts (${archived.length})`;
 
     populateCalDateOptions();
     populateCalTimeOptions();
     renderCalGrid();
+}
+
+function toggleCalArchived() {
+    const el = document.getElementById("calArchivedGrid");
+    el.style.display = el.style.display === "none" ? "flex" : "none";
+    const count = el.children.length && el.children[0].classList.contains("calPostCard") ? el.children.length : 0;
+    document.getElementById("calArchivedToggle").textContent = `${el.style.display === "none" ? "Show" : "Hide"} already-scheduled posts (${count})`;
+}
+
+async function deleteCalPost(id) {
+    if (!confirm("Delete this post for good? This can't be undone.")) return;
+    const res = await fetch(`/api/posts/${id}`, { method: "DELETE" });
+    if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
+    loadCalendar();
 }
 
 function selectCalPost(id) {
