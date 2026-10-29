@@ -83,6 +83,8 @@ async function loadMe() {
     document.getElementById("who").textContent = `${me.name} (${me.role})`;
 }
 
+let allClients = [];
+
 async function load() {
     const res = await fetch(`/api/clients/${slug}/raw-media`);
     if (!res.ok) {
@@ -90,6 +92,7 @@ async function load() {
         return;
     }
     const { client, media } = await res.json();
+    if (!allClients.length) allClients = await (await fetch("/api/clients")).json();
     document.getElementById("title").textContent = `${client.name} — Raw footage (${media.length})`;
     if (attachToConcept) document.getElementById("attachBanner").style.display = "block";
     document.getElementById("media").innerHTML = media.length ? media.map(m => `
@@ -106,8 +109,28 @@ async function load() {
                 : `<button onclick="createPost('${m.id}')" style="margin-top:8px;">Create Post</button>
                    <button onclick="del('${m.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>`}
             ${m.url ? `<button onclick="downloadMedia('${m.url}', '${m.media_type}', '${m.id}')" style="margin-top:8px;">Download</button>` : ""}
+            <div style="margin-top:8px; padding-top:8px; border-top:1px dashed #ddd;">
+                <select id="moveSelect-${m.id}" style="font-size:12px; padding:4px;">
+                    ${allClients.filter(c => c.id !== client.id).map(c => `<option value="${c.id}">${c.name}</option>`).join("")}
+                </select>
+                <button onclick="moveClip('${m.id}')" style="font-size:12px; padding:4px 10px;">Move to company</button>
+                <span id="moveMsg-${m.id}" style="font-size:12px; margin-left:6px;"></span>
+            </div>
         </div>
     `).join("") : "<p>Nothing here yet.</p>";
+}
+
+async function moveClip(id) {
+    const newClientId = document.getElementById(`moveSelect-${id}`).value;
+    const msg = document.getElementById(`moveMsg-${id}`);
+    msg.textContent = "Moving...";
+    const res = await fetch(`/api/raw-media/${id}/move-client`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ newClientId }),
+    });
+    if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
+    load();
 }
 
 async function downloadMedia(url, mediaType, id) {

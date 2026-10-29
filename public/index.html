@@ -439,7 +439,8 @@ async function loadPosts() {
                 <select id="bgaudio-${p.id}" style="font-size:12px; margin-top:4px; max-width:260px;">
                     <option value="">No background music</option>
                 </select>
-                <button onclick="finish('${p.id}')" style="margin-top:6px;">Finish (burn hook onto video)</button>
+                <button id="finishbtn-${p.id}" onclick="finish('${p.id}')" style="margin-top:6px;">Finish (burn hook onto video)</button>
+                <span id="finishmsg-${p.id}" style="font-size:12px; color:#555; margin-left:6px;"></span>
             </div>` : ""}
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
         </div>
@@ -604,13 +605,28 @@ async function finish(postId) {
     const bgSelect = document.getElementById(`bgaudio-${postId}`);
     const backgroundAudioExampleId = bgSelect ? bgSelect.value : "";
     if (!overlayText.trim()) { alert("Enter the hook text to burn onto the video first."); return; }
-    const res = await fetch(`/api/posts/${postId}/finish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overlayText, mute, backgroundAudioExampleId }),
-    });
-    if (!res.ok) { alert("Finish failed: " + (await res.json()).error); return; }
-    loadPosts();
+
+    const btn = document.getElementById(`finishbtn-${postId}`);
+    const msg = document.getElementById(`finishmsg-${postId}`);
+    btn.disabled = true;
+    btn.textContent = "Burning hook onto video...";
+    if (msg) msg.textContent = "This takes up to a minute — don't close this or click again.";
+
+    try {
+        const res = await fetch(`/api/posts/${postId}/finish`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ overlayText, mute, backgroundAudioExampleId }),
+        });
+        if (!res.ok) { alert("Finish failed: " + (await res.json()).error); return; }
+        if (msg) msg.textContent = "Done — scroll up, the video now shows the finished version.";
+        loadPosts();
+    } catch (err) {
+        alert("Finish failed — lost connection to the server mid-render. Try again: " + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Finish (burn hook onto video)";
+    }
 }
 
 async function loadRawMedia() {

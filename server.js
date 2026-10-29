@@ -268,6 +268,35 @@ app.delete("/api/raw-media/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Moves a raw B-roll clip to a different company -- real need Josh flagged
+// 2026-10-29: footage sometimes lands under the wrong client's intake group
+// and needs reassigning (e.g. 811 Assist footage that actually belongs to
+// AM Underground). Only moves the raw_media row's client_id -- the storage
+// file itself doesn't move/rename, since client scoping is enforced by the
+// client_id column and access checks everywhere this reads it, not by the
+// physical storage path, so there's nothing load-bearing to migrate.
+// Deliberately does NOT touch any post already created from this clip --
+// a post that already exists keeps its own original client_id; this only
+// affects the raw B-roll bin going forward.
+app.post("/api/raw-media/:id/move-client", requireLogin, async (req, res) => {
+    const { newClientId } = req.body;
+    if (!newClientId) return res.status(400).json({ error: "newClientId required" });
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data: row, error: findErr } = await supabase
+        .from("raw_media").select("*").eq("id", req.params.id).single();
+    if (findErr || !row) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this clip's current company" });
+    if (!clientIds.includes(newClientId)) return res.status(403).json({ error: "no access to the destination company" });
+
+    const { error: dbErr } = await supabase.from("raw_media").update({ client_id: newClientId }).eq("id", row.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true });
+});
+
 // Shared helper for every Claude call this server makes. Calls the
 // Anthropic API directly over HTTPS -- NOT the `claude` CLI. This server
 // runs on Render, which has no CLI installed and no login profile, unlike
