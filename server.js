@@ -537,12 +537,25 @@ app.post("/api/posts/:id/crop-image", requireLogin, async (req, res) => {
 
 // Escapes a string for ffmpeg's drawtext filter, which treats \, : and '
 // as control characters in the filter graph syntax -- not shell escaping,
-// this is a different, narrower rule.
+// this is a different, narrower rule. A literal "%" does NOT need escaping
+// here -- the drawtext call below sets expansion=none specifically so %
+// (and everything else) renders as plain text with no special handling;
+// doubling it to %% (tried first, real bug found in testing) would print
+// two percent signs once expansion is off, which is worse, not fixed.
 function escapeDrawtext(text) {
     return text.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\u2019");
 }
 
-const HOOK_FONT = "/System/Library/Fonts/Supplemental/Arial Bold.ttf";
+// Real bug found 2026-10-29: this used to be a hardcoded macOS-only system
+// font path -- "/System/Library/Fonts/Supplemental/Arial Bold.ttf" -- which
+// only exists on Josh's own Mac. Every Finish call on the live Render site
+// was failing ("ffmpeg failed: ...") because that path doesn't exist on
+// Linux, the same class of bug FFMPEG_BIN/FFPROBE_BIN above already got
+// fixed for on 2026-10-19 -- this one just got missed in that pass. Fixed
+// by bundling a real font in the repo itself (Liberation Sans Bold, SIL
+// Open Font License, metric-compatible with Arial) instead of depending on
+// any system font being present on either platform.
+const HOOK_FONT = path.join(__dirname, "assets/fonts/LiberationSans-Bold.ttf");
 
 // Greedy word-wrap so the hook text actually fits the frame instead of
 // running off both edges -- the bug seen on the first real test. maxChars
@@ -653,7 +666,16 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     // expression, so this centers the whole wrapped block regardless of
     // how many lines it wraps to.
     const HOOK_ACCENT_COLOR = "0xFF6A00"; // construction-cone orange
-    const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(wrapped)}':`
+    // expansion=none: real bug found 2026-10-29 testing the font-path fix
+    // below -- a hook line with a literal "%" in it (e.g. "86% of damage
+    // claims...", a real drafted hook) crashed the whole filter graph
+    // ("Stray % near ..."). drawtext's default expansion mode treats %{...}
+    // as a live template directive (current timestamp, etc.), so any bare
+    // % gets read as the start of one. Doubling it (%%) -- the usual advice
+    // for this error -- did NOT fix it in real testing. expansion=none
+    // turns that whole mechanism off, so a literal % (or any other
+    // character) just renders as itself, no escaping needed for it at all.
+    const drawtext = `drawtext=fontfile='${HOOK_FONT}':text='${escapeDrawtext(wrapped)}':expansion=none:`
         + `fontsize=${fontsize}:fontcolor=white:bordercolor=${HOOK_ACCENT_COLOR}:borderw=5:`
         + `shadowcolor=black@0.7:shadowx=2:shadowy=2:line_spacing=8:`
         + `x=(w-text_w)/2:y=(h-text_h)/2`;
