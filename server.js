@@ -313,19 +313,26 @@ async function callClaude(prompt, maxTokens = 1024) {
     }
 }
 
-// Caption-drafting automation. Pulls real, live context for the client --
-// recent human edits to past AI drafts (the learning-loop signal),
-// standing text instructions from that client's Learning tab, plus the
-// shared research and that client's marketing-plan text from
-// caption_context -- and asks Claude directly for a draft. caption_context
-// is DB-backed specifically so updating the research/marketing-plan text
-// later never needs a code change or a Render redeploy, just an update to
-// that table. Calls the Anthropic API directly (not the `claude` CLI --
-// this runs on Render, which has no CLI/login, unlike the WhatsApp bot
-// which runs locally). Never throws past the create-post route -- a
-// drafting failure should never block creating the post itself; it just
-// leaves caption_draft null, same as before this existed.
-async function draftCaption(clientId, rawMedia) {
+// Caption AND hook-text drafting automation. Originally this only drafted
+// the caption -- real gap Josh caught 2026-10-28 using it live: he expected
+// the on-screen hook (the short line burned onto the video at Finish time,
+// stored in posts.overlay_text once that step runs) to be drafted too, not
+// just the caption. Fixed by having one Claude call return both, stored as
+// caption_draft and overlay_text_draft -- the Finish card's hook-text input
+// pre-fills from overlay_text_draft now instead of starting blank.
+//
+// Pulls real, live context for the client -- recent human edits to past AI
+// drafts (the learning-loop signal), standing text instructions from that
+// client's Learning tab, plus the shared research and that client's
+// marketing-plan text from caption_context -- and asks Claude directly.
+// caption_context is DB-backed specifically so updating the research/
+// marketing-plan text later never needs a code change or a Render
+// redeploy, just an update to that table. Calls the Anthropic API directly
+// (not the `claude` CLI -- this runs on Render, which has no CLI/login,
+// unlike the WhatsApp bot which runs locally). Never throws past its
+// caller -- a drafting failure should never block creating the post
+// itself; it just leaves both drafts null, same as before this existed.
+async function draftCaptionAndHook(clientId, rawMedia) {
     const [{ data: context }, { data: textInstructions }, { data: editHistory }] = await Promise.all([
         supabase.from("caption_context").select("category, content").or(`client_id.is.null,client_id.eq.${clientId}`),
         supabase.from("example_media").select("instruction_text").eq("client_id", clientId).eq("media_type", "text"),
@@ -339,7 +346,10 @@ async function draftCaption(clientId, rawMedia) {
         ? editHistory.map(e => `AI drafted: "${e.ai_draft}"\nHuman changed it to: "${e.human_final}"`).join("\n\n")
         : "(no edit history yet for this client -- no prior corrections to learn from)";
 
-    const prompt = `You are drafting a social media caption for a real client's content dashboard. Write ONE caption, ready to post as-is.
+    const prompt = `You are drafting both the caption AND the on-screen hook text for a real client's social media post.
+
+- "caption" is the full post caption, ready to post as-is.
+- "hook" is a short line (aim under 60 characters, it gets burned directly onto the video and needs to be readable at a glance) that resolves or previews the point on-screen rather than only existing in the caption -- don't just repeat the caption's first sentence verbatim if it's long.
 
 Reference material for this client and in general (follow it -- it reflects real research and real past correction patterns, not generic advice):
 ${contextBlock}
@@ -352,9 +362,20 @@ ${historyBlock}
 
 Raw footage context: this is a ${rawMedia.media_type}${rawMedia.caption_raw ? `, originally sent with this note: "${rawMedia.caption_raw}"` : ""}.
 
-Reply with ONLY the caption text itself -- no preamble, no quotation marks around it, no explanation.`;
+Reply with ONLY raw JSON, no markdown, no explanation, in this exact shape:
+{"caption": "...", "hook": "..."}`;
 
-    return await callClaude(prompt, 1024);
+    const result = await callClaude(prompt, 1024);
+    if (!result) return { caption: null, hook: null };
+    try {
+        const parsed = JSON.parse(result);
+        return { caption: parsed.caption || null, hook: parsed.hook || null };
+    } catch (e) {
+        console.error("caption/hook JSON parse failed:", e.message, "-- raw:", result);
+        // Fall back to using the raw response as the caption rather than
+        // losing the draft entirely over a formatting slip.
+        return { caption: result, hook: null };
+    }
 }
 
 // Turns a raw B-roll clip into an actual reviewable post. Generic across
@@ -371,12 +392,13 @@ app.post("/api/raw-media/:id/create-post", requireLogin, async (req, res) => {
     if (findErr || !row) return res.status(404).json({ error: "not found" });
     if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this client" });
 
-    const caption_draft = await draftCaption(row.client_id, row);
+    const { caption: caption_draft, hook: overlay_text_draft } = await draftCaptionAndHook(row.client_id, row);
 
     const { data: post, error: insertErr } = await supabase.from("posts").insert({
         client_id: row.client_id,
         raw_media_id: row.id,
         caption_draft,
+        overlay_text_draft,
         status: "needs_review",
     }).select().single();
     if (insertErr) return res.status(500).json({ error: insertErr.message });
@@ -758,7 +780,7 @@ app.post("/api/examples/upload", requireLogin, exampleUpload.single("file"), asy
 
 // Standing instructions typed directly in -- "use this logo," "stop doing X."
 // No file, so reviewed_at is set immediately: there's nothing for Jarvis to
-// study, the typed text already IS the directive. draftCaption() below pulls
+// study, the typed text already IS the directive. draftCaptionAndHook() below pulls
 // every one of these in on every single caption draft, unconditionally.
 app.post("/api/examples/text-note", requireLogin, async (req, res) => {
     const text = (req.body.text || "").trim();
@@ -1092,12 +1114,13 @@ app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
     }).select().single();
     if (rawErr) return res.status(500).json({ error: rawErr.message });
 
-    const caption_draft = await draftCaption(concept.client_id, rawRow);
+    const { caption: caption_draft, hook: overlay_text_draft } = await draftCaptionAndHook(concept.client_id, rawRow);
 
     const { data: post, error: insertErr } = await supabase.from("posts").insert({
         client_id: concept.client_id,
         raw_media_id: rawRow.id,
         caption_draft,
+        overlay_text_draft,
         status: "needs_review",
     }).select().single();
     if (insertErr) return res.status(500).json({ error: insertErr.message });

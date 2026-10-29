@@ -55,6 +55,7 @@ create table posts (
   edited_media_path text,               -- the human-trimmed/cropped cut, once one exists
   finished_media_path text,             -- the trimmed cut with the hook text burned in, once rendered
   overlay_text text,                    -- the exact on-screen hook line used for the burn-in
+  overlay_text_draft text,              -- Jarvis's drafted hook line, added 2026-10-28 (live DB, applied directly via psql) -- pre-fills the Finish card's hook-text input instead of it starting blank
   background_audio_example_id uuid references example_media(id), -- optional licensed music track mixed in at Finish time
   created_at timestamptz not null default now()
 );
