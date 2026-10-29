@@ -402,8 +402,8 @@ async function loadPosts() {
             <span class="status ${p.status}">${p.status}</span>
             ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">${isImage(p) ? "cropped" : "trimmed"} cut</div>` : ""}
             ${p.finished_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:2px;">✓ finished — hook text burned in</div>` : ""}
-            ${p.media_url && isImage(p) ? `<img id="img-${p.id}" src="${p.media_url}" style="max-width:120px; display:block; margin:8px 0; border-radius:4px;">` : ""}
-            ${p.media_url && !isImage(p) ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:120px; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
+            ${p.media_url && isImage(p) ? `<img id="img-${p.id}" src="${p.media_url}" style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;">` : ""}
+            ${p.media_url && !isImage(p) ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
             <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
 
             ${p.media_url && isImage(p) ? `
