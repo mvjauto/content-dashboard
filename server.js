@@ -702,19 +702,40 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
         // clip loops (-stream_loop on input 0) -- the background track is
         // typically a full song, already well over TARGET_DURATION long, so
         // it doesn't need to repeat too.
+        //
+        // -preset ultrafast: real bug found 2026-10-29 reproducing a live
+        // Finish call against the actual Render deploy (not just locally,
+        // where a Mac's CPU hid this completely) -- the request hung for 70+
+        // seconds and came back 502, and the post never finished server-side
+        // even after. Render's free-tier instance was already sitting near
+        // its memory ceiling and has a fraction of a real CPU core; libx264's
+        // default "medium" preset re-encoding a full 20s looped clip with a
+        // drawtext filter was simply too slow to finish before Render's
+        // gateway gave up. ultrafast trades some compression efficiency
+        // (a somewhat larger output file) for dramatically less CPU time --
+        // the right trade for a short social clip, not a mastered file.
         ffmpegArgs = [
             "-y", "-stream_loop", "-1", "-i", tmpIn, "-i", bgAudioTmp,
             "-filter_complex", `[0:v]${drawtext}[vout];${audioGraph}`,
             "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-c:a", "aac", "-t", String(TARGET_DURATION), "-shortest", tmpOut,
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-t", String(TARGET_DURATION), "-shortest", tmpOut,
         ];
     } else {
         const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
-        ffmpegArgs = ["-y", "-stream_loop", "-1", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", ...audioArgs, "-t", String(TARGET_DURATION), tmpOut];
+        ffmpegArgs = ["-y", "-stream_loop", "-1", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", "-preset", "ultrafast", ...audioArgs, "-t", String(TARGET_DURATION), tmpOut];
     }
 
     try {
-        await execFileAsync(FFMPEG_BIN, ffmpegArgs);
+        // Real bug found 2026-10-29 alongside the ultrafast preset above:
+        // this call had no timeout at all. When a request hung long enough
+        // that Render's gateway gave up and returned 502, the ffmpeg child
+        // process kept running orphaned on the server with nothing waiting
+        // on it -- still burning CPU and memory, with repeated retries able
+        // to pile up multiple of these at once. A hard timeout means a
+        // stuck/too-slow encode gets killed outright instead of lingering
+        // and compounding; 90s gives real margin over the ultrafast preset's
+        // expected runtime without leaving a runaway process alive for long.
+        await execFileAsync(FFMPEG_BIN, ffmpegArgs, { timeout: 90000 });
     } catch (e) {
         fs.unlinkSync(tmpIn);
         if (bgAudioTmp) fs.unlinkSync(bgAudioTmp);
