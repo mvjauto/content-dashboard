@@ -78,10 +78,9 @@
   <div class="topbar">
     <div class="tabs">
       <button class="tab" id="tab-home" onclick="goHome()">Home</button>
-      <button class="tab" id="tab-queue" onclick="clearQueueFilter(); showTab('queue')">Approval Queue</button>
-      <button class="tab" id="tab-broll" onclick="goBroll()">B-Roll</button>
       <button class="tab" id="tab-learning" onclick="showTab('learning')">Learning</button>
-      <button class="tab" id="tab-team" onclick="showTab('team')" style="display:none;">Team</button>
+      <button class="tab" id="tab-broll" onclick="goBroll()">B-Roll</button>
+      <button class="tab" id="tab-queue" onclick="clearQueueFilter(); showTab('queue')">Approval Queue</button>
       <button class="tab" id="tab-concepts" onclick="showTab('concepts')">Concepts</button>
       <button class="tab" id="tab-calendar" onclick="showTab('calendar')">Calendar</button>
     </div>
@@ -91,6 +90,7 @@
       <div class="usermenu-dropdown" id="usermenu-dropdown" style="display:none;">
         <div class="who" id="who"></div>
         <hr>
+        <button class="company-opt" id="usermenu-team" onclick="showTab('team'); toggleUserMenu();" style="display:none;">Team</button>
         <button class="company-opt" onclick="toggleChangePassword()">Change password</button>
         <div id="changePasswordForm" style="display:none; padding:10px 14px; border-top:1px solid #eee;">
           <input id="cpCurrent" type="password" placeholder="Current password" style="font-size:13px; padding:6px; margin-bottom:6px;">
@@ -263,9 +263,13 @@ async function changePassword() {
 }
 
 function showTab(tab) {
+    // "team" has no button in the main tab bar anymore (moved into the
+    // account dropdown, owner-only) -- guard the lookup so switching to it
+    // doesn't throw and silently break every other tab's active-state too.
     ["home", "queue", "broll", "learning", "team", "concepts", "calendar"].forEach(t => {
         document.getElementById(`section-${t}`).style.display = t === tab ? "block" : "none";
-        document.getElementById(`tab-${t}`).classList.toggle("active", t === tab);
+        const tabBtn = document.getElementById(`tab-${t}`);
+        if (tabBtn) tabBtn.classList.toggle("active", t === tab);
     });
     syncUrl(tab);
     if (tab === "learning") loadExamples();
@@ -318,7 +322,7 @@ async function showApp() {
     loadPosts();
     loadRawMedia();
     if (me.role === "owner") {
-        document.getElementById("tab-team").style.display = "";
+        document.getElementById("usermenu-team").style.display = "";
     }
 
     const params = new URLSearchParams(location.search);
