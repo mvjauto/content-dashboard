@@ -416,7 +416,11 @@ async function loadPosts() {
             ${p.finished_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:2px;">✓ finished — hook text burned in</div>` : ""}
             ${p.media_url && isImage(p) ? `<img id="img-${p.id}" src="${p.media_url}" style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;">` : ""}
             ${p.media_url && !isImage(p) ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
-            <p style="white-space:pre-wrap;">${p.caption_draft || "(no caption yet)"}</p>
+            <textarea id="caption-${p.id}" rows="5" style="width:100%; max-width:360px; padding:8px; box-sizing:border-box; font-family:inherit; margin-top:6px;" placeholder="(no caption yet)">${escapeTextarea(p.caption_final || p.caption_draft || "")}</textarea>
+            <div>
+                <button onclick="saveCaption('${p.id}')" style="margin-top:4px;">Save caption</button>
+                <span id="captionMsg-${p.id}" style="font-size:12px; color:#555; margin-left:6px;"></span>
+            </div>
 
             ${p.media_url && isImage(p) ? `
             <div class="cropwrap">
@@ -605,6 +609,24 @@ async function cropImage(postId) {
     });
     if (!res.ok) { alert("Crop failed: " + (await res.json()).error); return; }
     loadPosts();
+}
+
+function escapeTextarea(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function saveCaption(postId) {
+    const caption = document.getElementById(`caption-${postId}`).value;
+    const msg = document.getElementById(`captionMsg-${postId}`);
+    if (!caption.trim()) { msg.textContent = "Caption can't be empty."; return; }
+    msg.textContent = "Saving...";
+    const res = await fetch(`/api/posts/${postId}/caption`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caption }),
+    });
+    if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
+    msg.textContent = "Saved.";
 }
 
 async function finish(postId) {

@@ -485,6 +485,34 @@ app.delete("/api/posts/:id", requireLogin, async (req, res) => {
     res.json({ ok: true });
 });
 
+// Lets Josh fix the caption before approving, right in the Approval Queue --
+// writes to caption_final (caption_draft stays untouched as the AI's
+// original). Logs the change to caption_edits when the text actually
+// changed from the draft -- that table already feeds draftCaptionAndHook's
+// "recent human corrections" context on every future draft for this client,
+// so this is wiring a human-edit UI onto a learning signal that already existed.
+app.post("/api/posts/:id/caption", requireLogin, async (req, res) => {
+    const caption = (req.body.caption || "").trim();
+    if (!caption) return res.status(400).json({ error: "caption can't be empty" });
+
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: post, error: findErr } = await supabase
+        .from("posts").select("id, client_id, caption_draft").eq("id", req.params.id).single();
+    if (findErr || !post) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(post.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    if (post.caption_draft && caption !== post.caption_draft) {
+        await supabase.from("caption_edits").insert({
+            post_id: post.id, ai_draft: post.caption_draft, human_final: caption, edited_by: req.session.user.id,
+        });
+    }
+
+    const { error } = await supabase.from("posts").update({ caption_final: caption }).eq("id", post.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+});
+
 // Approve a draft -- logs who approved it, flips status, still doesn't
 // publish on its own; the scheduler/publisher is a separate follow-up piece.
 app.post("/api/posts/:id/approve", requireLogin, async (req, res) => {
