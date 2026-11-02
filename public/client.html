@@ -102,8 +102,6 @@ async function load() {
                     ? `<video src="${m.url}" controls></video>`
                     : `<img src="${m.url}">`)
                 : "<p>(couldn't load media)</p>"}
-            <div class="meta">from ${m.sender || "unknown"} — ${new Date(m.received_at).toLocaleString()}</div>
-            ${m.caption_raw ? `<div class="caption">${m.caption_raw}</div>` : ""}
             ${attachToConcept
                 ? `<button onclick="attachClip('${m.id}')" style="margin-top:8px;">Attach to concept</button>`
                 : `<button onclick="createPost('${m.id}')" style="margin-top:8px;">Create Post</button>
