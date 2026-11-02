@@ -1322,7 +1322,7 @@ app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
     // gets drafted fresh each time. Block by default once a post traceably
     // exists from this exact concept; req.body.force lets it through
     // on purpose (e.g. the same clip posted with two different captions).
-    if (!req.body.force) {
+    if (!(req.body && req.body.force)) {
         const { data: priorRaw } = await supabase.from("raw_media")
             .select("id, posts(id)")
             .eq("client_id", concept.client_id).eq("source", "concept").eq("caption_raw", concept.text);
