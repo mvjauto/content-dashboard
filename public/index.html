@@ -170,6 +170,10 @@
       <span id="generateStatus" style="font-size:12px; color:#888; margin-left:8px;"></span>
     </div>
     <div id="concepts" style="margin-top:14px;"></div>
+    <div style="margin-top:14px;">
+      <button onclick="toggleConceptsArchived()" id="conceptsArchivedToggle" style="font-size:12px; background:none; border:1px solid #ccc; border-radius:4px; padding:4px 10px; cursor:pointer;">Show already sent to Approval Queue</button>
+      <div id="conceptsArchived" style="display:none; margin-top:10px; opacity:0.6;"></div>
+    </div>
   </section>
 
   <section id="section-calendar" style="display:none;">
@@ -863,12 +867,8 @@ function selectedConceptClientId() {
     return client ? client.id : null;
 }
 
-async function loadConcepts() {
-    renderConceptClientSelect();
-    const selectedSlug = document.getElementById("conceptClientSelect").value;
-    const all = await (await fetch("/api/concepts")).json();
-    const concepts = selectedSlug ? all.filter(c => c.clients && c.clients.slug === selectedSlug) : all;
-    document.getElementById("concepts").innerHTML = concepts.length ? concepts.map(c => `
+function conceptCardHtml(c) {
+    return `
         <div class="card">
             <div class="client">${c.clients ? c.clients.name : ""}</div>
             <textarea id="conceptEdit-${c.id}" rows="2" style="width:100%; max-width:500px; padding:8px; box-sizing:border-box; font-family:inherit; white-space:pre-wrap;">${c.text}</textarea>
@@ -878,7 +878,7 @@ async function loadConcepts() {
                     ? `<img src="${c.url}" style="max-width:220px; display:block; margin:8px 0;">`
                     : `<video src="${c.url}" controls style="max-width:220px; display:block; margin:8px 0;"></video>`}
                    <div class="meta">attached (${c.matched_video_source})</div>
-                   <button onclick="createPostFromConcept('${c.id}')" style="margin-top:6px;">Create post from this</button>`
+                   ${c.hasPost ? `<div class="meta" style="color:#2d6b48;">✓ already sent to the Approval Queue</div>` : `<button onclick="createPostFromConcept('${c.id}')" style="margin-top:6px;">Create post from this</button>`}`
                 : `<div style="margin-top:8px;">
                     <input type="file" accept="video/*" id="conceptVideoFile-${c.id}" style="display:block; margin-bottom:6px;">
                     <button onclick="uploadConceptVideo('${c.id}')">Upload video for this</button>
@@ -892,8 +892,33 @@ async function loadConcepts() {
                    </div>`}
             <div id="conceptMsg-${c.id}" style="font-size:12px; margin-top:6px;"></div>
             <button onclick="deleteConcept('${c.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
-        </div>
-    `).join("") : "<p>Nothing here yet for this company.</p>";
+        </div>`;
+}
+
+async function loadConcepts() {
+    renderConceptClientSelect();
+    const selectedSlug = document.getElementById("conceptClientSelect").value;
+    const all = await (await fetch("/api/concepts")).json();
+    const concepts = selectedSlug ? all.filter(c => c.clients && c.clients.slug === selectedSlug) : all;
+    const active = concepts.filter(c => !c.hasPost);
+    const archived = concepts.filter(c => c.hasPost);
+
+    document.getElementById("concepts").innerHTML = active.length
+        ? active.map(conceptCardHtml).join("")
+        : "<p>Nothing here yet for this company.</p>";
+
+    document.getElementById("conceptsArchived").innerHTML = archived.length
+        ? archived.map(conceptCardHtml).join("")
+        : "<p>None yet.</p>";
+    document.getElementById("conceptsArchivedToggle").textContent =
+        `${document.getElementById("conceptsArchived").style.display === "none" ? "Show" : "Hide"} already sent to Approval Queue (${archived.length})`;
+}
+
+function toggleConceptsArchived() {
+    const el = document.getElementById("conceptsArchived");
+    el.style.display = el.style.display === "none" ? "block" : "none";
+    const count = el.querySelectorAll(".card").length;
+    document.getElementById("conceptsArchivedToggle").textContent = `${el.style.display === "none" ? "Show" : "Hide"} already sent to Approval Queue (${count})`;
 }
 
 async function saveConceptText(id) {

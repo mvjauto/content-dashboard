@@ -996,11 +996,22 @@ app.get("/api/concepts", requireLogin, async (req, res) => {
         .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
 
+    // Flags which concepts already have a real post sitting in the Approval
+    // Queue (or further along) -- same lineage check create-post's duplicate
+    // guard uses (raw_media.source='concept' + caption_raw matching the
+    // concept's text, with an actual post attached). Lets the UI stop
+    // showing a concept as "to do" once it's already been acted on.
+    const { data: usedRaw } = await supabase
+        .from("raw_media").select("caption_raw, posts!inner(id)")
+        .in("client_id", clientIds).eq("source", "concept");
+    const usedTexts = new Set((usedRaw || []).map(r => r.caption_raw));
+
     const withUrls = await Promise.all(data.map(async (row) => {
-        if (!row.matched_video_path) return { ...row, url: null };
+        const hasPost = usedTexts.has(row.text);
+        if (!row.matched_video_path) return { ...row, url: null, hasPost };
         const { data: signed } = await supabase.storage
             .from("concept-media").createSignedUrl(row.matched_video_path, 3600);
-        return { ...row, url: signed ? signed.signedUrl : null };
+        return { ...row, url: signed ? signed.signedUrl : null, hasPost };
     }));
     res.json(withUrls);
 });
