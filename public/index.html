@@ -1184,7 +1184,8 @@ async function loadCalendar() {
                     : `<video src="${p.media_url}" controls style="width:132px; display:block; border-radius:3px;" onclick="event.stopPropagation()"></video>`)
                 : `<div style="width:132px; height:80px; background:#f0f0f0; border-radius:3px;"></div>`}
             <div style="font-size:11px; color:#888; margin-top:3px; max-height:30px; overflow:hidden;">${(p.caption_draft || p.caption_final || "(no caption)").slice(0, 50)}</div>
-            <button onclick="event.stopPropagation(); deleteCalPost('${p.id}')" style="margin-top:4px; font-size:11px; padding:2px 6px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; cursor:pointer;">Delete</button>
+            ${selectable ? `<button id="calSelectBtn-${p.id}" onclick="event.stopPropagation(); selectCalPost('${p.id}')" style="margin-top:4px; font-size:11px; padding:2px 6px; border-radius:4px; cursor:pointer; width:100%;">Select this one</button>` : ""}
+            <button onclick="event.stopPropagation(); deleteCalPost('${p.id}')" style="margin-top:4px; font-size:11px; padding:2px 6px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; cursor:pointer; width:100%;">Delete</button>
         </div>`;
 
     const grid = document.getElementById("calPostGrid");
@@ -1221,6 +1222,12 @@ function selectCalPost(id) {
     calSelectedPostId = id;
     document.querySelectorAll(".calPostCard").forEach(el => {
         el.style.borderColor = el.dataset.postId === id ? "#2d6b48" : "#ddd";
+    });
+    document.querySelectorAll("[id^='calSelectBtn-']").forEach(btn => {
+        const isThisOne = btn.id === `calSelectBtn-${id}`;
+        btn.textContent = isThisOne ? "✓ Selected" : "Select this one";
+        btn.style.background = isThisOne ? "#2d6b48" : "";
+        btn.style.color = isThisOne ? "white" : "";
     });
 }
 
