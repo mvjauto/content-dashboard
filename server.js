@@ -421,6 +421,20 @@ app.post("/api/raw-media/:id/create-post", requireLogin, async (req, res) => {
     if (findErr || !row) return res.status(404).json({ error: "not found" });
     if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this client" });
 
+    // Same real gap as the Concepts "Create post from this" guard -- nothing
+    // stopped this button from being clicked twice on the same clip,
+    // producing two duplicate posts with freshly-redrafted captions each
+    // time. raw_media_id is a real FK on posts already (not text matching,
+    // so no risk of silently breaking on an edit); force:true overrides on
+    // purpose, same convention as the Concepts guard.
+    if (!(req.body && req.body.force)) {
+        const { data: existingPost } = await supabase
+            .from("posts").select("id").eq("raw_media_id", row.id).maybeSingle();
+        if (existingPost) {
+            return res.status(409).json({ error: "A post was already created from this clip.", existingPostId: existingPost.id });
+        }
+    }
+
     const { caption: caption_draft, hook: overlay_text_draft } = await draftCaptionAndHook(row.client_id, row);
 
     const { data: post, error: insertErr } = await supabase.from("posts").insert({

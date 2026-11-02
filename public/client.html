@@ -166,8 +166,18 @@ async function attachClip(rawMediaId) {
     location.href = "/?tab=concepts";
 }
 
-async function createPost(id) {
-    const res = await fetch(`/api/raw-media/${id}/create-post`, { method: "POST" });
+async function createPost(id, force) {
+    const res = await fetch(`/api/raw-media/${id}/create-post`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: !!force }),
+    });
+    if (res.status === 409) {
+        if (confirm("A post was already created from this clip. Create another one anyway?")) {
+            return createPost(id, true);
+        }
+        return;
+    }
     if (!res.ok) { alert("Couldn't create post: " + (await res.json()).error); return; }
     alert("Added to the Approval Queue.");
 }
