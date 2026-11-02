@@ -1238,6 +1238,72 @@ app.post("/api/concepts/:id/pick-footage", requireLogin, async (req, res) => {
 // everywhere" rule -- trim/crop/finish/caption-drafting all already assume
 // a post traces back to a raw_media row, so this reuses every one of them
 // unmodified instead of building a second code path.
+// Reverses create-post-from-concept, for when Josh wants to pull a post out
+// of the queue and redo it. Real bug found 2026-11-02 doing this by hand
+// repeatedly: creating a brand-new concept from the post's caption every
+// time produced several near-duplicate concepts describing the same idea in
+// slightly different words, because the caption got freshly re-drafted each
+// time instead of recognizing the concept it already came from. This reuses
+// an existing concept by exact text match when one exists (attaching this
+// post's clip to it only if that concept currently has none), and only
+// creates a new concept when there's genuinely nothing to reuse.
+app.post("/api/posts/:id/send-back-to-concept", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+
+    const { data: post, error: pErr } = await supabase
+        .from("posts").select("*, raw_media(*)").eq("id", req.params.id).single();
+    if (pErr || !post) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(post.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const text = (post.caption_final || post.caption_draft || "").trim();
+    if (!text) return res.status(400).json({ error: "this post has no caption to carry back into a concept" });
+
+    let concept;
+    const { data: existing } = await supabase
+        .from("concepts").select("*").eq("client_id", post.client_id).eq("text", text).maybeSingle();
+
+    if (existing) {
+        concept = existing;
+    } else {
+        const { data: created, error: cErr } = await supabase.from("concepts").insert({
+            client_id: post.client_id, text, created_by: req.session.user.id,
+        }).select().single();
+        if (cErr) return res.status(500).json({ error: cErr.message });
+        concept = created;
+    }
+
+    if (!concept.matched_video_path && post.raw_media) {
+        const raw = post.raw_media;
+        const { data: fileBlob, error: dlErr } = await supabase.storage.from("raw-media").download(raw.storage_path);
+        if (dlErr) return res.status(500).json({ error: "couldn't pull the clip: " + dlErr.message });
+        const ext = path.extname(raw.storage_path) || (raw.media_type === "video" ? ".mp4" : ".jpg");
+        const storagePath = `${concept.id}-${Date.now()}${ext}`;
+        const buffer = Buffer.from(await fileBlob.arrayBuffer());
+        const { error: upErr } = await supabase.storage
+            .from("concept-media").upload(storagePath, buffer, { contentType: fileBlob.type, upsert: true });
+        if (upErr) return res.status(500).json({ error: "upload failed: " + upErr.message });
+        await supabase.from("concepts")
+            .update({ matched_video_path: storagePath, matched_media_type: raw.media_type, matched_video_source: "raw-media" })
+            .eq("id", concept.id);
+    }
+
+    // Clean up the post itself the same way DELETE /api/posts/:id does.
+    const ownPaths = [post.edited_media_path, post.finished_media_path].filter(Boolean);
+    if (ownPaths.length) await supabase.storage.from("raw-media").remove(ownPaths);
+    await supabase.from("posts").delete().eq("id", post.id);
+
+    // If the post's own raw_media is itself just a copy made for a prior
+    // concept->post trip, it's redundant now -- remove it. Genuine original
+    // B-roll (source "whatsapp") stays in the reusable bin untouched.
+    if (post.raw_media && post.raw_media.source === "concept") {
+        await supabase.storage.from("raw-media").remove([post.raw_media.storage_path]);
+        await supabase.from("raw_media").delete().eq("id", post.raw_media.id);
+    }
+
+    res.json({ ok: true, concept, reused: !!existing });
+});
+
 app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
     const clients = await clientsVisibleTo(req.session.user);
     const clientIds = clients.map(c => c.id);
@@ -1247,6 +1313,24 @@ app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
     if (cErr || !concept) return res.status(404).json({ error: "not found" });
     if (!clientIds.includes(concept.client_id)) return res.status(403).json({ error: "no access to this company" });
     if (!concept.matched_video_path) return res.status(400).json({ error: "attach a video to this concept first" });
+
+    // Real bug caught 2026-11-02: nothing stopped this route from being hit
+    // twice on the same concept (an accidental double-click, or re-clicking
+    // after forgetting it was already done) -- it silently created a second,
+    // freshly-redrafted post sitting right next to the first one in the
+    // Approval Queue, reading like two unrelated ideas since the caption
+    // gets drafted fresh each time. Block by default once a post traceably
+    // exists from this exact concept; req.body.force lets it through
+    // on purpose (e.g. the same clip posted with two different captions).
+    if (!req.body.force) {
+        const { data: priorRaw } = await supabase.from("raw_media")
+            .select("id, posts(id)")
+            .eq("client_id", concept.client_id).eq("source", "concept").eq("caption_raw", concept.text);
+        const existingPost = (priorRaw || []).flatMap(r => r.posts || []).find(Boolean);
+        if (existingPost) {
+            return res.status(409).json({ error: "A post was already created from this concept.", existingPostId: existingPost.id });
+        }
+    }
 
     const { data: fileBlob, error: dlErr } = await supabase.storage
         .from("concept-media").download(concept.matched_video_path);

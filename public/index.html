@@ -455,6 +455,7 @@ async function loadPosts() {
                 <span id="finishmsg-${p.id}" style="font-size:12px; color:#555; margin-left:6px;"></span>
             </div>` : ""}
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
+            <button onclick="sendBackToConcept('${p.id}')" style="margin-left:6px; background:#fff6e0; border:1px solid #f0dca0; border-radius:4px; padding:4px 10px; cursor:pointer;">Pull out, redo as concept</button>
         </div>
     `).join("") : "<p>Nothing waiting on review.</p>";
 
@@ -627,6 +628,13 @@ async function saveCaption(postId) {
     });
     if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
     msg.textContent = "Saved.";
+}
+
+async function sendBackToConcept(postId) {
+    if (!confirm("Pull this out of the queue and send it back to Concepts to redo? This deletes the post.")) return;
+    const res = await fetch(`/api/posts/${postId}/send-back-to-concept`, { method: "POST" });
+    if (!res.ok) { alert("Failed: " + (await res.json()).error); return; }
+    loadPosts();
 }
 
 async function finish(postId) {
@@ -1067,10 +1075,21 @@ async function pickFootage(conceptId, pixabayId, downloadUrl) {
     loadConcepts();
 }
 
-async function createPostFromConcept(conceptId) {
+async function createPostFromConcept(conceptId, force) {
     const msg = document.getElementById(`conceptMsg-${conceptId}`);
     msg.textContent = "Creating post and drafting a caption...";
-    const res = await fetch(`/api/concepts/${conceptId}/create-post`, { method: "POST" });
+    const res = await fetch(`/api/concepts/${conceptId}/create-post`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: !!force }),
+    });
+    if (res.status === 409) {
+        msg.textContent = "";
+        if (confirm("A post was already created from this concept. Create another one anyway?")) {
+            return createPostFromConcept(conceptId, true);
+        }
+        return;
+    }
     if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
     msg.textContent = "Done -- sitting in the Queue tab now, ready to review.";
 }
