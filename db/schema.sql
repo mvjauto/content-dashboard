@@ -36,7 +36,15 @@ create table raw_media (
   whatsapp_group_jid text,
   sender text,
   caption_raw text,                     -- whatever text came with it, unedited
-  received_at timestamptz not null default now()
+  received_at timestamptz not null default now(),
+  -- Added 2026-11-02, live DB (applied directly via the pooler, not through
+  -- this file's original run). Real FK linking a concept->post copy back to
+  -- its concept. Added because the original lineage check matched
+  -- concept.text against caption_raw as a string, and that broke silently
+  -- the moment a concept's text got edited after a post already existed
+  -- from it -- produced two live duplicate posts the same night this was
+  -- found. Null for genuine original B-roll (source 'whatsapp').
+  concept_id uuid references concepts(id) on delete set null
 );
 
 create table posts (

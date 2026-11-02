@@ -997,17 +997,20 @@ app.get("/api/concepts", requireLogin, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
 
     // Flags which concepts already have a real post sitting in the Approval
-    // Queue (or further along) -- same lineage check create-post's duplicate
-    // guard uses (raw_media.source='concept' + caption_raw matching the
-    // concept's text, with an actual post attached). Lets the UI stop
-    // showing a concept as "to do" once it's already been acted on.
+    // Queue (or further along), via raw_media.concept_id -- a real FK, added
+    // 2026-11-02 after the original text-match version broke: it matched
+    // concept.text against raw_media.caption_raw, which silently stopped
+    // working the moment a concept's text got edited after its post already
+    // existed (exactly what happened fixing the "3-Question Check" concept
+    // tonight -- produced two more live duplicate posts before this was
+    // caught). concept_id survives text edits since it's just an id.
     const { data: usedRaw } = await supabase
-        .from("raw_media").select("caption_raw, posts!inner(id)")
-        .in("client_id", clientIds).eq("source", "concept");
-    const usedTexts = new Set((usedRaw || []).map(r => r.caption_raw));
+        .from("raw_media").select("concept_id, posts!inner(id)")
+        .in("client_id", clientIds).not("concept_id", "is", null);
+    const usedConceptIds = new Set((usedRaw || []).map(r => r.concept_id));
 
     const withUrls = await Promise.all(data.map(async (row) => {
-        const hasPost = usedTexts.has(row.text);
+        const hasPost = usedConceptIds.has(row.id);
         if (!row.matched_video_path) return { ...row, url: null, hasPost };
         const { data: signed } = await supabase.storage
             .from("concept-media").createSignedUrl(row.matched_video_path, 3600);
@@ -1333,10 +1336,16 @@ app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
     // gets drafted fresh each time. Block by default once a post traceably
     // exists from this exact concept; req.body.force lets it through
     // on purpose (e.g. the same clip posted with two different captions).
+    //
+    // Checked via raw_media.concept_id (a real FK), not text matching --
+    // the first version of this guard matched concept.text against
+    // raw_media.caption_raw and broke silently the moment a concept got
+    // text-edited after its post already existed (produced two more live
+    // duplicates the same night this guard shipped, before concept_id did).
     if (!(req.body && req.body.force)) {
         const { data: priorRaw } = await supabase.from("raw_media")
             .select("id, posts(id)")
-            .eq("client_id", concept.client_id).eq("source", "concept").eq("caption_raw", concept.text);
+            .eq("concept_id", concept.id);
         const existingPost = (priorRaw || []).flatMap(r => r.posts || []).find(Boolean);
         if (existingPost) {
             return res.status(409).json({ error: "A post was already created from this concept.", existingPostId: existingPost.id });
@@ -1359,6 +1368,7 @@ app.post("/api/concepts/:id/create-post", requireLogin, async (req, res) => {
         storage_path: storagePath,
         media_type: concept.matched_media_type || "video",
         source: "concept",
+        concept_id: concept.id,
         caption_raw: concept.text,
     }).select().single();
     if (rawErr) return res.status(500).json({ error: rawErr.message });
