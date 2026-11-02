@@ -1522,7 +1522,16 @@ app.post("/api/scheduled-posts", requireLogin, async (req, res) => {
     }));
     const { data, error } = await supabase.from("scheduled_posts").insert(rows).select();
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ ok: true, scheduled: data });
+
+    // Josh asked 2026-11-02 to drop the separate manual "Send" click --
+    // hitting Schedule now hands every platform straight to upload-post.com
+    // right away (upload-post.com itself still holds the file and fires it
+    // at scheduled_date -- this isn't publishing early, just skipping the
+    // extra click). Each platform sends independently so one failing
+    // doesn't block the others; results go back in the response so the UI
+    // can show exactly what did and didn't go through, not just "Scheduled."
+    const sendResults = await Promise.all(data.map(row => sendScheduledPostToUploadPost(row.id)));
+    res.json({ ok: true, scheduled: data, sendResults });
 });
 
 app.delete("/api/scheduled-posts/:id", requireLogin, async (req, res) => {
@@ -1552,39 +1561,50 @@ app.delete("/api/scheduled-posts/:id", requireLogin, async (req, res) => {
 // this route requires one, it will not publish anything the moment it's
 // called. Josh said explicitly tonight: nothing posts without him seeing it
 // land correctly first.
-app.post("/api/scheduled-posts/:id/send-to-upload-post", requireLogin, async (req, res) => {
+// Shared by the manual "Send" button and the auto-send-on-schedule path
+// below. Real bug caught 2026-11-02: the original version only checked
+// result.error in the JSON body to decide success/failure -- never checked
+// the HTTP status, and never required a real job id back. A real live test
+// (scheduling for a time that had already passed) came back without an
+// `error` field and without a usable id, and this logic happily marked it
+// "scheduled" anyway -- three posts that never actually reached
+// upload-post.com at all, confirmed against their own upload history, sat
+// in our DB reading as successfully sent. Now: any non-2xx status, any
+// `error` field, OR a missing request_id all count as failure.
+async function sendScheduledPostToUploadPost(scheduledPostId) {
     if (!process.env.UPLOAD_POST_API_KEY) {
-        return res.status(501).json({ error: "No upload-post.com API key configured yet -- Josh needs to create an account there and hand over a key before this can run for real." });
+        return { id: scheduledPostId, ok: false, error: "No upload-post.com API key configured yet." };
     }
 
-    const clients = await clientsVisibleTo(req.session.user);
-    const clientIds = clients.map(c => c.id);
     const { data: sched, error: sErr } = await supabase
         .from("scheduled_posts").select("*, posts(finished_media_path, edited_media_path, caption_draft, caption_final, raw_media_id)")
-        .eq("id", req.params.id).single();
-    if (sErr || !sched) return res.status(404).json({ error: "not found" });
-    if (!clientIds.includes(sched.client_id)) return res.status(403).json({ error: "no access to this company" });
-    // Real bug caught 2026-10-20: nothing stopped this route from being
-    // called twice for the same scheduled post -- it fired an actual
-    // duplicate live post to 811 Assist's real Facebook page. Once a send
-    // has genuinely succeeded, refuse to resend rather than hitting
-    // upload-post.com's API again.
+        .eq("id", scheduledPostId).single();
+    if (sErr || !sched) return { id: scheduledPostId, ok: false, error: "scheduled post not found" };
+
+    // Real bug caught 2026-10-20: nothing stopped this from being called
+    // twice for the same scheduled post -- fired an actual duplicate live
+    // post to 811 Assist's real Facebook page. Once a send has genuinely
+    // succeeded, refuse to resend rather than hitting the API again.
     if (sched.upload_post_status === "scheduled") {
-        return res.status(409).json({ error: "This was already sent successfully -- refusing to send it again. Delete the scheduled entry and re-add it if you really need to resend." });
+        return { id: scheduledPostId, ok: false, error: "already sent successfully -- refusing to send again", platform: sched.platform };
     }
 
     const mediaPath = sched.posts.finished_media_path || sched.posts.edited_media_path;
-    if (!mediaPath) return res.status(400).json({ error: "this post has no finished video yet -- trim/crop + Finish it first" });
+    if (!mediaPath) {
+        return { id: scheduledPostId, ok: false, error: "this post has no finished video yet -- trim/crop + Finish it first", platform: sched.platform };
+    }
 
     const { data: account } = await supabase
         .from("platform_accounts").select("*")
         .eq("client_id", sched.client_id).eq("platform", sched.platform).maybeSingle();
     if (!account || !account.upload_post_profile) {
-        return res.status(400).json({ error: `No upload-post profile connected yet for this company's ${sched.platform}. That's a one-time human OAuth step Josh has to do in a browser -- can't be automated.` });
+        return { id: scheduledPostId, ok: false, error: `no upload-post profile connected yet for ${sched.platform}`, platform: sched.platform };
     }
 
     const { data: fileBlob, error: dlErr } = await supabase.storage.from("raw-media").download(mediaPath);
-    if (dlErr) return res.status(500).json({ error: "couldn't pull the finished video: " + dlErr.message });
+    if (dlErr) {
+        return { id: scheduledPostId, ok: false, error: "couldn't fetch the finished video: " + dlErr.message, platform: sched.platform };
+    }
 
     const caption = sched.posts.caption_final || sched.posts.caption_draft || "";
     const form = new FormData();
@@ -1595,27 +1615,42 @@ app.post("/api/scheduled-posts/:id/send-to-upload-post", requireLogin, async (re
     form.append("scheduled_date", `${sched.scheduled_date}T${sched.scheduled_time}:00`);
     form.append("timezone", "America/Chicago");
 
-    let result;
+    let resp, result;
     try {
-        const resp = await fetch("https://api.upload-post.com/api/upload", {
+        resp = await fetch("https://api.upload-post.com/api/upload", {
             method: "POST",
             headers: { "Authorization": `Apikey ${process.env.UPLOAD_POST_API_KEY}` },
             body: form,
         });
         result = await resp.json();
     } catch (e) {
-        return res.status(500).json({ error: "upload-post request failed: " + e.message });
+        const msg = "upload-post request failed: " + e.message;
+        await supabase.from("scheduled_posts").update({ upload_post_status: "failed", upload_post_error: msg }).eq("id", sched.id);
+        return { id: scheduledPostId, ok: false, error: msg, platform: sched.platform };
     }
 
-    if (result.error) {
-        await supabase.from("scheduled_posts").update({ upload_post_status: "failed", upload_post_error: result.error }).eq("id", sched.id);
-        return res.status(500).json({ error: result.error });
+    if (!resp.ok || result.error || !result.request_id) {
+        const msg = result.error || result.message || `upload-post returned ${resp.status} with no usable request id`;
+        await supabase.from("scheduled_posts").update({ upload_post_status: "failed", upload_post_error: msg }).eq("id", sched.id);
+        return { id: scheduledPostId, ok: false, error: msg, platform: sched.platform };
     }
 
     await supabase.from("scheduled_posts")
-        .update({ upload_post_job_id: result.request_id || null, upload_post_status: "scheduled" })
+        .update({ upload_post_job_id: result.request_id, upload_post_status: "scheduled" })
         .eq("id", sched.id);
-    res.json({ ok: true, result });
+    return { id: scheduledPostId, ok: true, platform: sched.platform, result };
+}
+
+app.post("/api/scheduled-posts/:id/send-to-upload-post", requireLogin, async (req, res) => {
+    const clients = await clientsVisibleTo(req.session.user);
+    const clientIds = clients.map(c => c.id);
+    const { data: sched } = await supabase.from("scheduled_posts").select("client_id").eq("id", req.params.id).single();
+    if (!sched) return res.status(404).json({ error: "not found" });
+    if (!clientIds.includes(sched.client_id)) return res.status(403).json({ error: "no access to this company" });
+
+    const result = await sendScheduledPostToUploadPost(req.params.id);
+    if (!result.ok) return res.status(result.error && result.error.includes("already sent") ? 409 : 500).json({ error: result.error });
+    res.json({ ok: true, result: result.result });
 });
 
 const port = process.env.PORT || 3000;

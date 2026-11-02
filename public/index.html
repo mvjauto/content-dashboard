@@ -1337,15 +1337,25 @@ async function schedulePost() {
     const msg = document.getElementById("calMsg");
     if (!postId || !date || !time || !platforms.length) { msg.textContent = "Pick a video, a date, a time, and at least one platform."; return; }
 
+    msg.textContent = "Scheduling and sending to upload-post...";
     const res = await fetch("/api/scheduled-posts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ postId, date, time, platforms }),
     });
     if (!res.ok) { msg.textContent = "Failed: " + (await res.json()).error; return; }
-    msg.textContent = "Scheduled.";
-    document.querySelectorAll(".calPlatformCb").forEach(cb => cb.checked = false);
-    calSelectedPostId = null;
+    const data = await res.json();
+    const results = data.sendResults || [];
+    const okCount = results.filter(r => r.ok).length;
+    const failed = results.filter(r => !r.ok);
+    msg.innerHTML = failed.length
+        ? `Scheduled, but ${okCount}/${results.length} actually sent. Failed: ` +
+          failed.map(f => `${f.platform || "?"} (${f.error})`).join("; ")
+        : `Scheduled and sent to all ${okCount} platform${okCount === 1 ? "" : "s"}.`;
+    if (!failed.length) {
+        document.querySelectorAll(".calPlatformCb").forEach(cb => cb.checked = false);
+        calSelectedPostId = null;
+    }
     loadCalendar();
 }
 
