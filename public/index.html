@@ -132,7 +132,11 @@
     <div style="margin-top:12px; padding-top:12px; border-top:1px dashed #ddd;">
       <p style="color:#888; font-size:13px; margin:0 0 6px;">Or type a standing instruction — "use this logo," "stop doing X." No file needed; this gets pulled into every caption Jarvis drafts for that company from now on.</p>
       <textarea id="instructionText" rows="2" style="width:100%; max-width:500px; padding:8px; box-sizing:border-box; font-family:inherit;" placeholder="e.g. Never use the word &quot;guys&quot; in captions"></textarea>
-      <button onclick="addTextNote()">Add note</button>
+      <div style="margin-top:6px;">
+        <button onclick="addTextNote()">Add note</button>
+        <button id="learningRecordBtn" onclick="toggleLearningRecording()" style="margin-left:6px;">🎤 Record instead</button>
+        <span id="learningRecordStatus" style="font-size:12px; color:#c0392b; margin-left:8px;"></span>
+      </div>
     </div>
     <div id="examples" style="margin-top:14px;"></div>
   </section>
@@ -949,6 +953,52 @@ async function toggleRecording() {
     };
 
     mediaRecorder.start();
+    btn.textContent = "⏹ Stop recording";
+    status.textContent = "Recording...";
+}
+
+let learningMediaRecorder = null;
+let learningRecordedChunks = [];
+
+async function toggleLearningRecording() {
+    const btn = document.getElementById("learningRecordBtn");
+    const status = document.getElementById("learningRecordStatus");
+
+    if (learningMediaRecorder && learningMediaRecorder.state === "recording") {
+        learningMediaRecorder.stop();
+        return;
+    }
+
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+        status.textContent = "Mic access denied or unavailable.";
+        return;
+    }
+
+    learningRecordedChunks = [];
+    learningMediaRecorder = new MediaRecorder(stream);
+    learningMediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) learningRecordedChunks.push(e.data); };
+    learningMediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        btn.textContent = "🎤 Record instead";
+        status.textContent = "Transcribing...";
+
+        const clientId = selectedLearningClientId();
+        if (!clientId) { status.textContent = "Pick a company first."; return; }
+
+        const blob = new Blob(learningRecordedChunks, { type: "audio/webm" });
+        const form = new FormData();
+        form.append("file", blob, "recording.webm");
+        form.append("clientId", clientId);
+        const res = await fetch("/api/examples/record", { method: "POST", body: form });
+        if (!res.ok) { status.textContent = "Failed: " + (await res.json()).error; return; }
+        status.textContent = "Added.";
+        loadExamples();
+    };
+
+    learningMediaRecorder.start();
     btn.textContent = "⏹ Stop recording";
     status.textContent = "Recording...";
 }

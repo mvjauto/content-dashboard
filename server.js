@@ -897,6 +897,35 @@ app.post("/api/examples/text-note", requireLogin, async (req, res) => {
     res.json({ ok: true, example: row });
 });
 
+// Talk instead of type, same as Concepts' mic button -- transcribes via
+// Whisper (transcribeAudioBuffer, defined below; safe to call here since
+// function declarations are hoisted) and saves straight as a standing
+// instruction, no audio file kept in Storage.
+app.post("/api/examples/record", requireLogin, exampleUpload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "no audio uploaded" });
+    const client = await resolveAllowedClient(req.session.user, req.body.clientId);
+    if (!client) return res.status(400).json({ error: "pick a valid company" });
+
+    let text;
+    try {
+        text = await transcribeAudioBuffer(req.file.buffer);
+    } catch (e) {
+        return res.status(500).json({ error: "transcription failed: " + e.message });
+    }
+    if (!text || !text.trim()) return res.status(400).json({ error: "couldn't make out any speech in that recording" });
+
+    const { data: row, error: dbErr } = await supabase.from("example_media").insert({
+        client_id: client.id,
+        media_type: "text",
+        instruction_text: text.trim(),
+        uploaded_by: req.session.user.id,
+        reviewed_at: new Date().toISOString(),
+    }).select().single();
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    res.json({ ok: true, example: row });
+});
+
 app.post("/api/examples/:id/notes", requireLogin, async (req, res) => {
     const { notes } = req.body;
     const { error } = await supabase.from("example_media")
