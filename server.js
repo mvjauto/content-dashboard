@@ -726,7 +726,7 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     // 576 wide, but the naive probe reported 1024 and sized text for that.
     const { stdout: probeOut } = await execFileAsync(FFPROBE_BIN,
         ["-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height:stream_side_data=rotation",
+         "-show_entries", "stream=width,height:stream_side_data=rotation:format=duration",
          "-of", "json", tmpIn]);
     const probeData = JSON.parse(probeOut);
     const stream = probeData.streams[0];
@@ -734,13 +734,22 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
     const rotated90 = Math.abs(rotation) === 90 || Math.abs(rotation) === 270;
     const width = (rotated90 ? stream.height : stream.width) || 1080;
 
-    // Every finished video loops to fill a fixed total length, per Josh
-    // 2026-10-19 -- a 3s clip replays ~7 times back to back rather than
-    // playing once and stopping. -stream_loop on the source input loops
-    // both its video and audio together (so a looped clip's own sync audio
-    // stays in sync through every repeat); the global -t hard-cuts the
-    // whole output at this length regardless of how short the source is.
-    const TARGET_DURATION = 20;
+    // Reel length rule, per Josh 2026-11-04 (replaced the old fixed 20s
+    // loop from 2026-10-19): under 8s loops up to exactly 8s, 8-10s plays
+    // once at its own length, over 10s gets cut at 10s. -stream_loop on the
+    // source input loops both its video and audio together (so a looped
+    // clip's own sync audio stays in sync through every repeat), and is only
+    // added when the clip actually needs looping; the global -t is always
+    // set so the background-track case still gets a hard cutoff. If the
+    // probe can't read a duration, fall back to looping and cutting at 10s.
+    const MIN_DURATION = 8;
+    const MAX_DURATION = 10;
+    const sourceDuration = parseFloat(probeData.format && probeData.format.duration);
+    const hasDuration = Number.isFinite(sourceDuration) && sourceDuration > 0;
+    const needsLoop = !hasDuration || sourceDuration < MIN_DURATION;
+    const TARGET_DURATION = !hasDuration ? MAX_DURATION
+        : Math.min(MAX_DURATION, Math.max(MIN_DURATION, sourceDuration));
+    const loopArgs = needsLoop ? ["-stream_loop", "-1"] : [];
 
     const fontsize = Math.max(22, Math.min(48, Math.round(width / 16)));
     const maxChars = Math.floor(width / (fontsize * 0.58));
@@ -795,9 +804,9 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
         // stream, so it was encoding the FULL track length regardless of how
         // long the video actually is. -t with a hard duration is the
         // deterministic cutoff; -shortest stays as a backstop. Only the main
-        // clip loops (-stream_loop on input 0) -- the background track is
-        // typically a full song, already well over TARGET_DURATION long, so
-        // it doesn't need to repeat too.
+        // clip loops (-stream_loop on input 0, when it's under 8s) -- the
+        // background track is typically a full song, already well over
+        // TARGET_DURATION long, so it doesn't need to repeat too.
         //
         // -preset ultrafast: real bug found 2026-10-29 reproducing a live
         // Finish call against the actual Render deploy (not just locally,
@@ -805,20 +814,20 @@ app.post("/api/posts/:id/finish", requireLogin, async (req, res) => {
         // seconds and came back 502, and the post never finished server-side
         // even after. Render's free-tier instance was already sitting near
         // its memory ceiling and has a fraction of a real CPU core; libx264's
-        // default "medium" preset re-encoding a full 20s looped clip with a
+        // default "medium" preset re-encoding a full 20s looped clip (the old fixed length) with a
         // drawtext filter was simply too slow to finish before Render's
         // gateway gave up. ultrafast trades some compression efficiency
         // (a somewhat larger output file) for dramatically less CPU time --
         // the right trade for a short social clip, not a mastered file.
         ffmpegArgs = [
-            "-y", "-stream_loop", "-1", "-i", tmpIn, "-i", bgAudioTmp,
+            "-y", ...loopArgs, "-i", tmpIn, "-i", bgAudioTmp,
             "-filter_complex", `[0:v]${drawtext}[vout];${audioGraph}`,
             "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-t", String(TARGET_DURATION), "-shortest", tmpOut,
         ];
     } else {
         const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
-        ffmpegArgs = ["-y", "-stream_loop", "-1", "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", "-preset", "ultrafast", ...audioArgs, "-t", String(TARGET_DURATION), tmpOut];
+        ffmpegArgs = ["-y", ...loopArgs, "-i", tmpIn, "-vf", drawtext, "-c:v", "libx264", "-preset", "ultrafast", ...audioArgs, "-t", String(TARGET_DURATION), tmpOut];
     }
 
     try {
