@@ -113,6 +113,10 @@
     <h2>Approval queue</h2>
     <div id="queueFilterChip"></div>
     <div id="posts"></div>
+    <div style="margin-top:14px;">
+      <button onclick="togglePostsArchived()" id="postsArchivedToggle" style="font-size:12px; background:none; border:1px solid #ccc; border-radius:4px; padding:4px 10px; cursor:pointer;">Show already scheduled</button>
+      <div id="postsArchived" style="display:none; margin-top:10px; opacity:0.6;"></div>
+    </div>
   </section>
 
   <section id="section-broll" style="display:none;">
@@ -401,18 +405,10 @@ function clearQueueFilter() {
 
 const trimState = {}; // postId -> { start, end, duration }
 
-async function loadPosts() {
-    const all = await (await fetch("/api/posts")).json();
-    const filterClient = queueFilterSlug ? myClients.find(c => c.slug === queueFilterSlug) : null;
-    const posts = filterClient ? all.filter(p => p.client_id === filterClient.id) : all;
+const isImage = p => p.raw_media && p.raw_media.media_type === "image";
 
-    document.getElementById("queueFilterChip").innerHTML = filterClient
-        ? `<span class="filterchip">${filterClient.name} only<button onclick="clearQueueFilter()">✕ show all</button></span>`
-        : "";
-
-    const isImage = p => p.raw_media && p.raw_media.media_type === "image";
-
-    document.getElementById("posts").innerHTML = posts.length ? posts.map(p => `
+function postCardHtml(p) {
+    return `
         <div class="card">
             <div class="client">${p.clients ? p.clients.name : ""}</div>
             <span class="status ${p.status}">${p.status}</span>
@@ -460,8 +456,30 @@ async function loadPosts() {
             </div>` : ""}
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
             <button onclick="sendBackToConcept('${p.id}')" style="margin-left:6px; background:#fff6e0; border:1px solid #f0dca0; border-radius:4px; padding:4px 10px; cursor:pointer;">Pull out, redo as concept</button>
-        </div>
-    `).join("") : "<p>Nothing waiting on review.</p>";
+        </div>`;
+}
+
+async function loadPosts() {
+    const all = await (await fetch("/api/posts")).json();
+    const filterClient = queueFilterSlug ? myClients.find(c => c.slug === queueFilterSlug) : null;
+    const posts = filterClient ? all.filter(p => p.client_id === filterClient.id) : all;
+
+    document.getElementById("queueFilterChip").innerHTML = filterClient
+        ? `<span class="filterchip">${filterClient.name} only<button onclick="clearQueueFilter()">✕ show all</button></span>`
+        : "";
+
+    const active = posts.filter(p => !p.isScheduled);
+    const archived = posts.filter(p => p.isScheduled);
+
+    document.getElementById("posts").innerHTML = active.length
+        ? active.map(postCardHtml).join("")
+        : "<p>Nothing waiting on review.</p>";
+
+    document.getElementById("postsArchived").innerHTML = archived.length
+        ? archived.map(postCardHtml).join("")
+        : "<p>None yet.</p>";
+    document.getElementById("postsArchivedToggle").textContent =
+        `${document.getElementById("postsArchived").style.display === "none" ? "Show" : "Hide"} already scheduled (${archived.length})`;
 
     posts.forEach(p => {
         if (!p.media_url) return;
@@ -912,6 +930,13 @@ async function loadConcepts() {
         : "<p>None yet.</p>";
     document.getElementById("conceptsArchivedToggle").textContent =
         `${document.getElementById("conceptsArchived").style.display === "none" ? "Show" : "Hide"} already sent to Approval Queue (${archived.length})`;
+}
+
+function togglePostsArchived() {
+    const el = document.getElementById("postsArchived");
+    el.style.display = el.style.display === "none" ? "block" : "none";
+    const count = el.querySelectorAll(".card").length;
+    document.getElementById("postsArchivedToggle").textContent = `${el.style.display === "none" ? "Show" : "Hide"} already scheduled (${count})`;
 }
 
 function toggleConceptsArchived() {

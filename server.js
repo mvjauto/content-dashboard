@@ -460,16 +460,25 @@ app.get("/api/posts", requireLogin, async (req, res) => {
         .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
 
+    // Flags which posts already have a real scheduled_posts row, same
+    // pattern as Concepts' hasPost and Calendar's archived-picker split --
+    // lets the Queue tab stop showing a post as "needs attention" once it's
+    // actually on the calendar, instead of piling up indefinitely.
+    const { data: scheduledRows } = await supabase
+        .from("scheduled_posts").select("post_id").in("client_id", clientIds);
+    const scheduledPostIds = new Set((scheduledRows || []).map(r => r.post_id));
+
     // A caption without the clip it goes with isn't reviewable -- sign the
     // URL here so the approval card can actually show the footage. Once a
     // post has a human-trimmed cut, that's what shows -- never the raw clip.
     const withUrls = await Promise.all(data.map(async (post) => {
+        const isScheduled = scheduledPostIds.has(post.id);
         const showPath = post.finished_media_path || post.edited_media_path || (post.raw_media && post.raw_media.storage_path);
-        if (!showPath) return post;
+        if (!showPath) return { ...post, isScheduled };
         const { data: signed } = await supabase.storage
             .from("raw-media")
             .createSignedUrl(showPath, 3600);
-        return { ...post, media_url: signed ? signed.signedUrl : null };
+        return { ...post, media_url: signed ? signed.signedUrl : null, isScheduled };
     }));
     res.json(withUrls);
 });
