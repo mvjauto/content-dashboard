@@ -819,10 +819,11 @@ function toggleEditAccess(userId) {
 
 async function saveUserAccess(userId) {
     const clientSlugs = Array.from(document.querySelectorAll(`.editAccessCb-${userId}:checked`)).map(cb => cb.value);
+    const calendarSlugs = Array.from(document.querySelectorAll(`.editCalCb-${userId}:checked`)).map(cb => cb.value);
     const res = await fetch(`/api/users/${userId}/access`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientSlugs }),
+        body: JSON.stringify({ clientSlugs, calendarSlugs }),
     });
     if (!res.ok) { alert("Couldn't save: " + (await res.json()).error); return; }
     loadTeam();
@@ -855,13 +856,22 @@ async function loadTeam() {
                 <div style="font-size:11px; color:#2d6b48; margin-top:2px;">Click to ${u.role === "owner" ? "reset password" : "edit access or reset password"}</div>
             </div>
             <div id="editAccess-${u.id}" style="display:none; margin-top:10px; padding-top:10px; border-top:1px dashed #ddd;">
-                ${u.role !== "owner" ? myClients.map(c => `
-                    <label style="margin-right:14px; font-size:13px;">
-                        <input type="checkbox" class="editAccessCb-${u.id}" value="${c.slug}" style="display:inline; width:auto; margin:0 4px 0 0;"
-                            ${u.clients !== "all" && u.clients.some(uc => uc.slug === c.slug) ? "checked" : ""}>
-                        ${c.name}
-                    </label>
-                `).join("") : `<p style="font-size:12px; color:#888; margin:0 0 8px;">Owners always see every company -- nothing to pick here.</p>`}
+                ${u.role !== "owner" ? myClients.map(c => {
+                    const uc = u.clients !== "all" ? u.clients.find(x => x.slug === c.slug) : null;
+                    return `
+                    <div style="margin-bottom:6px;">
+                        <label style="margin-right:10px; font-size:13px;">
+                            <input type="checkbox" class="editAccessCb-${u.id}" value="${c.slug}" style="display:inline; width:auto; margin:0 4px 0 0;"
+                                ${uc ? "checked" : ""}>
+                            ${c.name}
+                        </label>
+                        <label style="font-size:12px; color:#555;">
+                            <input type="checkbox" class="editCalCb-${u.id}" value="${c.slug}" style="display:inline; width:auto; margin:0 4px 0 0;"
+                                ${uc && uc.can_calendar ? "checked" : ""}>
+                            Calendar access
+                        </label>
+                    </div>`;
+                }).join("") : `<p style="font-size:12px; color:#888; margin:0 0 8px;">Owners always see every company -- nothing to pick here.</p>`}
                 <div style="margin-top:8px;">
                     ${u.role !== "owner" ? `<button onclick="event.stopPropagation(); saveUserAccess('${u.id}')">Save access</button>` : ""}
                     <button onclick="event.stopPropagation(); resetUserPassword('${u.id}', '${u.email}')" ${u.role !== "owner" ? `style="margin-left:6px;"` : ""}>Reset password</button>
@@ -1201,8 +1211,11 @@ let calSelectedPostId = null;
 function renderCalClientSelect() {
     const sel = document.getElementById("calClientSelect");
     const prevValue = sel.value;
-    sel.innerHTML = myClients.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
-    if (prevValue) sel.value = prevValue;
+    const allowed = myClients.filter(c => c.can_calendar !== false);
+    sel.innerHTML = allowed.length
+        ? allowed.map(c => `<option value="${c.slug}">${c.name}</option>`).join("")
+        : `<option value="">No Calendar access for any company</option>`;
+    if (prevValue && allowed.some(c => c.slug === prevValue)) sel.value = prevValue;
 }
 
 function calShiftMonth(delta) {

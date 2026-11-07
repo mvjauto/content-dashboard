@@ -84,6 +84,22 @@ async function clientsVisibleTo(user) {
     return (data || []).map(row => row.clients);
 }
 
+// Same idea as clientsVisibleTo, but for the Calendar permission toggle Josh
+// asked for 2026-11-07 -- a staff member can see a company without being
+// allowed to schedule/send for it. Owners always have it (nothing to toggle
+// for them, same pattern as general access).
+async function clientsWithCalendarAccess(user) {
+    if (user.role === "owner") {
+        const { data } = await supabase.from("clients").select("*");
+        return data || [];
+    }
+    const { data } = await supabase
+        .from("user_client_access")
+        .select("clients(*)")
+        .eq("user_id", user.id).eq("can_calendar", true);
+    return (data || []).map(row => row.clients);
+}
+
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 app.post("/api/login", async (req, res) => {
@@ -120,7 +136,13 @@ app.post("/api/change-password", requireLogin, async (req, res) => {
 app.get("/api/me", requireLogin, (req, res) => res.json(req.session.user));
 
 app.get("/api/clients", requireLogin, async (req, res) => {
-    res.json(await clientsVisibleTo(req.session.user));
+    const clients = await clientsVisibleTo(req.session.user);
+    // can_calendar added 2026-11-07 for the per-company Calendar toggle --
+    // additive only, so every other tab's company picker (Learning, B-Roll,
+    // Concepts...) keeps using this same list unaffected. Owners always true.
+    const calClients = req.session.user.role === "owner" ? null : await clientsWithCalendarAccess(req.session.user);
+    const calIds = calClients ? new Set(calClients.map(c => c.id)) : null;
+    res.json(clients.map(c => ({ ...c, can_calendar: calIds ? calIds.has(c.id) : true })));
 });
 
 // Owner-only team management -- lets Josh add people himself instead of
@@ -132,10 +154,10 @@ app.get("/api/users", requireOwner, async (req, res) => {
     const { data: users, error } = await supabase.from("users").select("id, email, name, role, created_at");
     if (error) return res.status(500).json({ error: error.message });
 
-    const { data: access } = await supabase.from("user_client_access").select("user_id, clients(slug, name)");
+    const { data: access } = await supabase.from("user_client_access").select("user_id, can_calendar, clients(slug, name)");
     const withAccess = users.map(u => ({
         ...u,
-        clients: u.role === "owner" ? "all" : (access || []).filter(a => a.user_id === u.id).map(a => a.clients),
+        clients: u.role === "owner" ? "all" : (access || []).filter(a => a.user_id === u.id).map(a => ({ ...a.clients, can_calendar: a.can_calendar })),
     }));
     res.json(withAccess);
 });
@@ -166,9 +188,13 @@ app.post("/api/users", requireOwner, async (req, res) => {
 // Josh checks/unchecks boxes for that person and hits save, this just makes
 // the database match exactly what's checked. Owners aren't editable here --
 // their role already sees everything regardless of this table.
+// calendarSlugs added 2026-11-07 for the per-company Calendar permission
+// toggle -- must be a subset of clientSlugs; a company that isn't checked at
+// all obviously can't have calendar access either.
 app.put("/api/users/:id/access", requireOwner, async (req, res) => {
-    const { clientSlugs } = req.body;
+    const { clientSlugs, calendarSlugs } = req.body;
     if (!Array.isArray(clientSlugs)) return res.status(400).json({ error: "clientSlugs must be an array" });
+    const calSet = new Set(Array.isArray(calendarSlugs) ? calendarSlugs : []);
 
     const { data: targetUser } = await supabase.from("users").select("id, role").eq("id", req.params.id).single();
     if (!targetUser) return res.status(404).json({ error: "not found" });
@@ -179,7 +205,7 @@ app.put("/api/users/:id/access", requireOwner, async (req, res) => {
 
     if (clientSlugs.length) {
         const { data: clients } = await supabase.from("clients").select("id, slug").in("slug", clientSlugs);
-        const accessRows = clients.map(c => ({ user_id: targetUser.id, client_id: c.id }));
+        const accessRows = clients.map(c => ({ user_id: targetUser.id, client_id: c.id, can_calendar: calSet.has(c.slug) }));
         const { error: insErr } = await supabase.from("user_client_access").insert(accessRows);
         if (insErr) return res.status(500).json({ error: insErr.message });
     }
@@ -1508,7 +1534,7 @@ app.delete("/api/concepts/:id", requireLogin, async (req, res) => {
 // platform, matching the real-world shape of a multi-platform publish job
 // even though the actual publish step itself is still parked.
 app.get("/api/scheduled-posts", requireLogin, async (req, res) => {
-    const clients = await clientsVisibleTo(req.session.user);
+    const clients = await clientsWithCalendarAccess(req.session.user);
     const clientIds = clients.map(c => c.id);
 
     const { data, error } = await supabase
@@ -1530,9 +1556,9 @@ app.post("/api/scheduled-posts", requireLogin, async (req, res) => {
         .from("posts").select("id, client_id").eq("id", postId).single();
     if (postErr || !post) return res.status(404).json({ error: "post not found" });
 
-    const clients = await clientsVisibleTo(req.session.user);
+    const clients = await clientsWithCalendarAccess(req.session.user);
     const clientIds = clients.map(c => c.id);
-    if (!clientIds.includes(post.client_id)) return res.status(403).json({ error: "no access to this company" });
+    if (!clientIds.includes(post.client_id)) return res.status(403).json({ error: "no Calendar access for this company" });
 
     const rows = platforms.map(platform => ({
         post_id: post.id, client_id: post.client_id, scheduled_date: date,
@@ -1553,12 +1579,12 @@ app.post("/api/scheduled-posts", requireLogin, async (req, res) => {
 });
 
 app.delete("/api/scheduled-posts/:id", requireLogin, async (req, res) => {
-    const clients = await clientsVisibleTo(req.session.user);
+    const clients = await clientsWithCalendarAccess(req.session.user);
     const clientIds = clients.map(c => c.id);
     const { data: row, error: findErr } = await supabase
         .from("scheduled_posts").select("*").eq("id", req.params.id).single();
     if (findErr || !row) return res.status(404).json({ error: "not found" });
-    if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no access to this company" });
+    if (!clientIds.includes(row.client_id)) return res.status(403).json({ error: "no Calendar access for this company" });
 
     const { error } = await supabase.from("scheduled_posts").delete().eq("id", row.id);
     if (error) return res.status(500).json({ error: error.message });
@@ -1660,11 +1686,11 @@ async function sendScheduledPostToUploadPost(scheduledPostId) {
 }
 
 app.post("/api/scheduled-posts/:id/send-to-upload-post", requireLogin, async (req, res) => {
-    const clients = await clientsVisibleTo(req.session.user);
+    const clients = await clientsWithCalendarAccess(req.session.user);
     const clientIds = clients.map(c => c.id);
     const { data: sched } = await supabase.from("scheduled_posts").select("client_id").eq("id", req.params.id).single();
     if (!sched) return res.status(404).json({ error: "not found" });
-    if (!clientIds.includes(sched.client_id)) return res.status(403).json({ error: "no access to this company" });
+    if (!clientIds.includes(sched.client_id)) return res.status(403).json({ error: "no Calendar access for this company" });
 
     const result = await sendScheduledPostToUploadPost(req.params.id);
     if (!result.ok) return res.status(result.error && result.error.includes("already sent") ? 409 : 500).json({ error: result.error });

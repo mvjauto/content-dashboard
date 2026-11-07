@@ -93,6 +93,12 @@ create table users (
 create table user_client_access (
   user_id uuid not null references users(id) on delete cascade,
   client_id uuid not null references clients(id) on delete cascade,
+  -- Added 2026-11-07, live DB (applied directly via the pooler). Lets a
+  -- staff member see a company without being able to use its Calendar --
+  -- Josh wants per-person control over who can schedule/send, separate from
+  -- who can just see the company. Defaults true so nobody's existing access
+  -- was silently revoked when this column was added.
+  can_calendar boolean not null default true,
   primary key (user_id, client_id)
 );
 
