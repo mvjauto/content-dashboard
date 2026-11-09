@@ -1633,7 +1633,20 @@ async function sendScheduledPostToUploadPost(scheduledPostId) {
         return { id: scheduledPostId, ok: false, error: "already sent successfully -- refusing to send again", platform: sched.platform };
     }
 
-    const mediaPath = sched.posts.finished_media_path || sched.posts.edited_media_path;
+    let mediaPath = sched.posts.finished_media_path || sched.posts.edited_media_path;
+    // Fix 2026-11-09: reels rendered and finished OUTSIDE the dashboard
+    // (own captions/music burned in) come in via Concepts -> Create Post,
+    // which saves them only as a raw_media clip with source "concept". They
+    // must not be re-Finished here, so treat that uploaded video as the
+    // finished video instead of refusing to send.
+    if (!mediaPath && sched.posts.raw_media_id) {
+        const { data: raw } = await supabase
+            .from("raw_media").select("storage_path, source, media_type")
+            .eq("id", sched.posts.raw_media_id).maybeSingle();
+        if (raw && raw.source === "concept" && raw.storage_path && raw.media_type !== "image") {
+            mediaPath = raw.storage_path;
+        }
+    }
     if (!mediaPath) {
         return { id: scheduledPostId, ok: false, error: "this post has no finished video yet -- trim/crop + Finish it first", platform: sched.platform };
     }
