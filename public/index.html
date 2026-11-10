@@ -456,7 +456,19 @@ function postCardHtml(p) {
             </div>` : ""}
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
             <button onclick="sendBackToConcept('${p.id}')" style="margin-left:6px; background:#fff6e0; border:1px solid #f0dca0; border-radius:4px; padding:4px 10px; cursor:pointer;">Pull out, redo as concept</button>
+            <button onclick="deletePostCleanly('${p.id}')" style="margin-left:6px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete, send clip back to B-Roll</button>
         </div>`;
+}
+
+// Deletes the post itself -- the trimmed cut and the hook-burned render,
+// if either exist. The original raw clip was never touched by either of
+// those (both are separate derived files), so it's already sitting clean
+// in B-Roll the moment the post's gone -- nothing extra to "send back."
+async function deletePostCleanly(postId) {
+    if (!confirm("Delete this post? The original clip (no hook, no trim) stays in B-Roll, ready to redo from scratch.")) return;
+    const res = await fetch(`/api/posts/${postId}`, { method: "DELETE" });
+    if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
+    loadPosts();
 }
 
 async function loadPosts() {
