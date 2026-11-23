@@ -479,6 +479,7 @@ function postCardHtml(p) {
             ${p.status === "needs_review" ? `<button onclick="approve('${p.id}')">Approve</button>` : ""}
             <button onclick="sendBackToConcept('${p.id}')" style="margin-left:6px; background:#fff6e0; border:1px solid #f0dca0; border-radius:4px; padding:4px 10px; cursor:pointer;">Pull out, redo as concept</button>
             <button onclick="deletePostCleanly('${p.id}')" style="margin-left:6px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete, send clip back to B-Roll</button>
+            <button onclick="deletePostCompletely('${p.id}')" style="margin-left:6px; background:#c0392b; color:#fff; border:1px solid #a52f24; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete completely (clip too)</button>
         </div>`;
 }
 
@@ -490,6 +491,19 @@ async function deletePostCleanly(postId) {
     if (!confirm("Delete this post? The original clip (no hook, no trim) stays in B-Roll, ready to redo from scratch.")) return;
     const res = await fetch(`/api/posts/${postId}`, { method: "DELETE" });
     if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
+    loadPosts();
+}
+
+// Real delete, no B-Roll fallback -- wipes the original clip's file and
+// row too, not just this post's own trimmed/finished cuts. The server
+// skips the clip wipe (and says so) if some other post still points at
+// the same clip, so this can't silently break a different post.
+async function deletePostCompletely(postId) {
+    if (!confirm("Delete this post AND its original clip completely? This is permanent -- nothing goes back to B-Roll. Can't be undone.")) return;
+    const res = await fetch(`/api/posts/${postId}?purge=true`, { method: "DELETE" });
+    if (!res.ok) { alert("Delete failed: " + (await res.json()).error); return; }
+    const data = await res.json();
+    if (!data.clipPurged) alert("Post deleted. The original clip was kept, though -- another post still uses it.");
     loadPosts();
 }
 

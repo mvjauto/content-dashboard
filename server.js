@@ -528,10 +528,17 @@ app.get("/api/posts", requireLogin, async (req, res) => {
     res.json(withUrls);
 });
 
-// Delete a post outright -- the raw clip in raw_media is untouched (it's the
-// reusable B-roll bin), only this post's own edited/finished cuts go, since
-// nothing else points at those paths. scheduled_posts/caption_edits rows for
-// it are removed by the DB's own "on delete cascade", not here.
+// Delete a post outright -- the raw clip in raw_media is untouched by
+// default (it's the reusable B-roll bin), only this post's own edited/
+// finished cuts go, since nothing else points at those paths.
+// scheduled_posts/caption_edits rows for it are removed by the DB's own
+// "on delete cascade", not here.
+//
+// ?purge=true (2026-11-23, Josh asked for a real "delete it 100%" option
+// on top of the above): also wipes the original raw_media clip itself --
+// its Storage file and its row, for good, no B-roll fallback. Guarded on
+// no OTHER post still pointing at the same raw_media_id, so purging one
+// post's clip can't silently break a different post that reused it.
 app.delete("/api/posts/:id", requireLogin, async (req, res) => {
     const clients = await clientsVisibleTo(req.session.user);
     const clientIds = clients.map(c => c.id);
@@ -547,10 +554,28 @@ app.delete("/api/posts/:id", requireLogin, async (req, res) => {
         if (storageErr) return res.status(500).json({ error: "couldn't delete file: " + storageErr.message });
     }
 
+    let clipPurged = false;
+    if (req.query.purge === "true" && row.raw_media_id) {
+        const { count: otherUses } = await supabase
+            .from("posts").select("*", { count: "exact", head: true })
+            .eq("raw_media_id", row.raw_media_id).neq("id", row.id);
+        if (!otherUses) {
+            const { data: rawRow } = await supabase
+                .from("raw_media").select("storage_path").eq("id", row.raw_media_id).maybeSingle();
+            if (rawRow && rawRow.storage_path) {
+                const { error: rawStorageErr } = await supabase.storage.from("raw-media").remove([rawRow.storage_path]);
+                if (rawStorageErr) return res.status(500).json({ error: "couldn't delete the original clip file: " + rawStorageErr.message });
+            }
+            const { error: rawDbErr } = await supabase.from("raw_media").delete().eq("id", row.raw_media_id);
+            if (rawDbErr) return res.status(500).json({ error: "couldn't delete the original clip record: " + rawDbErr.message });
+            clipPurged = true;
+        }
+    }
+
     const { error: dbErr } = await supabase.from("posts").delete().eq("id", row.id);
     if (dbErr) return res.status(500).json({ error: "couldn't delete record: " + dbErr.message });
 
-    res.json({ ok: true });
+    res.json({ ok: true, clipPurged });
 });
 
 // Lets Josh fix the caption before approving, right in the Approval Queue --
