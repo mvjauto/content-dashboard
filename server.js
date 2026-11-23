@@ -15,6 +15,28 @@ const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
+// Signed URLs used to be requested one at a time, in parallel, inside a
+// Promise.all -- that's one Storage API round trip per row. Fine at a
+// handful of rows, a real slowdown once a list grows into the hundreds
+// (raw_media and posts both crossed that line by Nov 2026). Supabase's
+// createSignedUrls (plural) signs a whole batch in one request; this
+// wraps it so every list endpoint below can ask once instead of N times.
+async function signPathsBatch(bucket, paths) {
+    const uniquePaths = [...new Set(paths.filter(Boolean))];
+    if (!uniquePaths.length) return {};
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrls(uniquePaths, 3600);
+    if (error || !data) return {};
+    const map = {};
+    data.forEach(d => { if (d.path) map[d.path] = d.signedUrl; });
+    return map;
+}
+
+// Default cap for list endpoints that previously fetched a whole table's
+// history on every page load. Lists are already ordered newest-first, so
+// this just stops the response (and the signed-URL batch behind it) from
+// growing without bound as more posts/clips pile up day after day.
+const LIST_LIMIT = 150;
+
 // Sessions used to live in plain server memory (express-session's default
 // store) -- fine on a laptop, broken here: Render's free plan spins the
 // service down after 15 min idle, and every manual deploy (constant, since
@@ -260,15 +282,12 @@ app.get("/api/clients/:slug/raw-media", requireLogin, async (req, res) => {
         .from("raw_media")
         .select("*")
         .eq("client_id", client.id)
-        .order("received_at", { ascending: false });
+        .order("received_at", { ascending: false })
+        .limit(LIST_LIMIT);
     if (error) return res.status(500).json({ error: error.message });
 
-    const withUrls = await Promise.all(data.map(async (row) => {
-        const { data: signed } = await supabase.storage
-            .from("raw-media")
-            .createSignedUrl(row.storage_path, 3600);
-        return { ...row, url: signed ? signed.signedUrl : null };
-    }));
+    const urlMap = await signPathsBatch("raw-media", data.map(row => row.storage_path));
+    const withUrls = data.map(row => ({ ...row, url: urlMap[row.storage_path] || null }));
     res.json({ client, media: withUrls });
 });
 
@@ -483,7 +502,8 @@ app.get("/api/posts", requireLogin, async (req, res) => {
         .from("posts")
         .select("*, raw_media(storage_path, media_type), clients(name)")
         .in("client_id", clientIds)
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .limit(LIST_LIMIT);
     if (error) return res.status(500).json({ error: error.message });
 
     // Flags which posts already have a real scheduled_posts row, same
@@ -497,15 +517,14 @@ app.get("/api/posts", requireLogin, async (req, res) => {
     // A caption without the clip it goes with isn't reviewable -- sign the
     // URL here so the approval card can actually show the footage. Once a
     // post has a human-trimmed cut, that's what shows -- never the raw clip.
-    const withUrls = await Promise.all(data.map(async (post) => {
+    const showPathFor = (post) => post.finished_media_path || post.edited_media_path || (post.raw_media && post.raw_media.storage_path);
+    const urlMap = await signPathsBatch("raw-media", data.map(showPathFor));
+    const withUrls = data.map(post => {
         const isScheduled = scheduledPostIds.has(post.id);
-        const showPath = post.finished_media_path || post.edited_media_path || (post.raw_media && post.raw_media.storage_path);
+        const showPath = showPathFor(post);
         if (!showPath) return { ...post, isScheduled };
-        const { data: signed } = await supabase.storage
-            .from("raw-media")
-            .createSignedUrl(showPath, 3600);
-        return { ...post, media_url: signed ? signed.signedUrl : null, isScheduled };
-    }));
+        return { ...post, media_url: urlMap[showPath] || null, isScheduled };
+    });
     res.json(withUrls);
 });
 
@@ -915,12 +934,8 @@ app.get("/api/examples", requireLogin, async (req, res) => {
         .order("uploaded_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
 
-    const withUrls = await Promise.all(data.map(async (row) => {
-        if (!row.storage_path) return { ...row, url: null };
-        const { data: signed } = await supabase.storage
-            .from("learning-examples").createSignedUrl(row.storage_path, 3600);
-        return { ...row, url: signed ? signed.signedUrl : null };
-    }));
+    const urlMap = await signPathsBatch("learning-examples", data.map(row => row.storage_path));
+    const withUrls = data.map(row => ({ ...row, url: row.storage_path ? (urlMap[row.storage_path] || null) : null }));
     res.json(withUrls);
 });
 
@@ -1067,13 +1082,12 @@ app.get("/api/concepts", requireLogin, async (req, res) => {
         .in("client_id", clientIds).not("concept_id", "is", null);
     const usedConceptIds = new Set((usedRaw || []).map(r => r.concept_id));
 
-    const withUrls = await Promise.all(data.map(async (row) => {
+    const urlMap = await signPathsBatch("concept-media", data.map(row => row.matched_video_path));
+    const withUrls = data.map(row => {
         const hasPost = usedConceptIds.has(row.id);
         if (!row.matched_video_path) return { ...row, url: null, hasPost };
-        const { data: signed } = await supabase.storage
-            .from("concept-media").createSignedUrl(row.matched_video_path, 3600);
-        return { ...row, url: signed ? signed.signedUrl : null, hasPost };
-    }));
+        return { ...row, url: urlMap[row.matched_video_path] || null, hasPost };
+    });
     res.json(withUrls);
 });
 

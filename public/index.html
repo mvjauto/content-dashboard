@@ -220,6 +220,28 @@
 let me = null;
 let myClients = [];
 
+// Videos used to render with a real src on every card, so a page with
+// hundreds of posts/clips tried to start loading hundreds of videos at
+// once. Cards now carry the signed URL in data-src instead; this wires
+// the <src> up only once a card actually scrolls into view.
+function lazyVideos(root) {
+    const els = root.querySelectorAll("video[data-src]");
+    if (!("IntersectionObserver" in window)) {
+        els.forEach(v => { v.src = v.dataset.src; v.removeAttribute("data-src"); });
+        return;
+    }
+    const io = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            const v = entry.target;
+            v.src = v.dataset.src;
+            v.removeAttribute("data-src");
+            io.unobserve(v);
+        });
+    }, { rootMargin: "200px" });
+    els.forEach(v => io.observe(v));
+}
+
 async function login() {
     const email = document.getElementById("email").value;
     const password = document.getElementById("password").value;
@@ -414,8 +436,8 @@ function postCardHtml(p) {
             <span class="status ${p.status}">${p.status}</span>
             ${p.edited_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:6px;">${isImage(p) ? "cropped" : "trimmed"} cut</div>` : ""}
             ${p.finished_media_path ? `<div style="font-size:11px; color:#2d6b48; margin-top:2px;">✓ finished — hook text burned in</div>` : ""}
-            ${p.media_url && isImage(p) ? `<img id="img-${p.id}" src="${p.media_url}" style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;">` : ""}
-            ${p.media_url && !isImage(p) ? `<video id="video-${p.id}" src="${p.media_url}" controls style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
+            ${p.media_url && isImage(p) ? `<img id="img-${p.id}" src="${p.media_url}" loading="lazy" style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;">` : ""}
+            ${p.media_url && !isImage(p) ? `<video id="video-${p.id}" data-src="${p.media_url}" controls style="max-width:360px; width:100%; display:block; margin:8px 0; border-radius:4px;"></video>` : ""}
             <textarea id="caption-${p.id}" rows="5" style="width:100%; max-width:360px; padding:8px; box-sizing:border-box; font-family:inherit; margin-top:6px;" placeholder="(no caption yet)">${escapeTextarea(p.caption_final || p.caption_draft || "")}</textarea>
             <div>
                 <button onclick="saveCaption('${p.id}')" style="margin-top:4px;">Save caption</button>
@@ -492,6 +514,9 @@ async function loadPosts() {
         : "<p>None yet.</p>";
     document.getElementById("postsArchivedToggle").textContent =
         `${document.getElementById("postsArchived").style.display === "none" ? "Show" : "Hide"} already scheduled (${archived.length})`;
+
+    lazyVideos(document.getElementById("posts"));
+    lazyVideos(document.getElementById("postsArchived"));
 
     posts.forEach(p => {
         if (!p.media_url) return;
@@ -732,10 +757,10 @@ async function loadExamples() {
                 ? `<div style="padding:10px; background:#fff6e0; border:1px solid #f0dca0; border-radius:4px; font-size:14px;"><strong>Standing instruction:</strong> ${e.instruction_text}</div>`
                 : e.url
                     ? (e.media_type === "video"
-                        ? `<video src="${e.url}" controls style="max-width:220px;"></video>`
+                        ? `<video data-src="${e.url}" controls style="max-width:220px;"></video>`
                         : e.media_type === "audio"
                             ? `<audio src="${e.url}" controls style="width:260px;"></audio>`
-                            : `<img src="${e.url}" style="max-width:220px;">`)
+                            : `<img src="${e.url}" loading="lazy" style="max-width:220px;">`)
                     : "<p>(couldn't load media)</p>"}
             ${e.media_type !== "text" ? `<div class="meta">${e.original_filename || ""} — uploaded ${new Date(e.uploaded_at).toLocaleString()}</div>` : `<div class="meta">added ${new Date(e.uploaded_at).toLocaleString()}</div>`}
             ${e.media_type !== "text" ? (e.reviewed_at
@@ -744,6 +769,7 @@ async function loadExamples() {
             <button onclick="deleteExample('${e.id}')" style="margin-top:8px; background:#fde8e8; border:1px solid #e0a0a0; border-radius:4px; padding:4px 10px; cursor:pointer;">Delete</button>
         </div>
     `).join("") : "<p>Nothing uploaded yet for this company's view -- switch companies above or add something.</p>";
+    lazyVideos(document.getElementById("examples"));
 }
 
 function selectedLearningClientId() {
@@ -915,8 +941,8 @@ function conceptCardHtml(c) {
             <button onclick="saveConceptText('${c.id}')" style="margin-top:4px;">Save edit</button>
             ${c.url
                 ? `${c.matched_media_type === "image"
-                    ? `<img src="${c.url}" style="max-width:220px; display:block; margin:8px 0;">`
-                    : `<video src="${c.url}" controls style="max-width:220px; display:block; margin:8px 0;"></video>`}
+                    ? `<img src="${c.url}" loading="lazy" style="max-width:220px; display:block; margin:8px 0;">`
+                    : `<video data-src="${c.url}" controls style="max-width:220px; display:block; margin:8px 0;"></video>`}
                    <div class="meta">attached (${c.matched_video_source})</div>
                    ${c.hasPost ? `<div class="meta" style="color:#2d6b48;">✓ already sent to the Approval Queue</div>` : `<button onclick="createPostFromConcept('${c.id}')" style="margin-top:6px;">Create post from this</button>`}`
                 : `<div style="margin-top:8px;">
@@ -950,6 +976,9 @@ async function loadConcepts() {
     document.getElementById("conceptsArchived").innerHTML = archived.length
         ? archived.map(conceptCardHtml).join("")
         : "<p>None yet.</p>";
+
+    lazyVideos(document.getElementById("concepts"));
+    lazyVideos(document.getElementById("conceptsArchived"));
     document.getElementById("conceptsArchivedToggle").textContent =
         `${document.getElementById("conceptsArchived").style.display === "none" ? "Show" : "Hide"} already sent to Approval Queue (${archived.length})`;
 }
@@ -1255,8 +1284,8 @@ async function loadCalendar() {
              style="border:2px solid #ddd; border-radius:4px; padding:4px; ${selectable ? "cursor:pointer;" : ""} width:140px;">
             ${p.media_url
                 ? ((p.raw_media && p.raw_media.media_type === "image")
-                    ? `<img src="${p.media_url}" style="width:132px; display:block; border-radius:3px;">`
-                    : `<video src="${p.media_url}" controls style="width:132px; display:block; border-radius:3px;" onclick="event.stopPropagation()"></video>`)
+                    ? `<img src="${p.media_url}" loading="lazy" style="width:132px; display:block; border-radius:3px;">`
+                    : `<video data-src="${p.media_url}" controls style="width:132px; display:block; border-radius:3px;" onclick="event.stopPropagation()"></video>`)
                 : `<div style="width:132px; height:80px; background:#f0f0f0; border-radius:3px;"></div>`}
             <div style="font-size:11px; color:#888; margin-top:3px; max-height:30px; overflow:hidden;">${(p.caption_draft || p.caption_final || "(no caption)").slice(0, 50)}</div>
             ${selectable ? `<button id="calSelectBtn-${p.id}" onclick="event.stopPropagation(); selectCalPost('${p.id}')" style="margin-top:4px; font-size:11px; padding:2px 6px; border-radius:4px; cursor:pointer; width:100%;">Select this one</button>` : ""}
@@ -1273,6 +1302,9 @@ async function loadCalendar() {
         ? archived.map(p => cardHtml(p, false)).join("")
         : `<div style="color:#888; font-size:13px;">None yet</div>`;
     document.getElementById("calArchivedToggle").textContent = `${archivedGrid.style.display === "none" ? "Show" : "Hide"} already-scheduled posts (${archived.length})`;
+
+    lazyVideos(grid);
+    lazyVideos(archivedGrid);
 
     populateCalDateOptions();
     populateCalTimeOptions();

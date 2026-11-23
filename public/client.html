@@ -56,6 +56,27 @@
 const slug = new URLSearchParams(location.search).get("slug");
 const attachToConcept = new URLSearchParams(location.search).get("attachToConcept");
 
+// Same lazy-load used on the main dashboard -- this page can carry a
+// client's entire B-roll bin (hundreds of clips), so videos only pick
+// up a real src once their card actually scrolls into view.
+function lazyVideos(root) {
+    const els = root.querySelectorAll("video[data-src]");
+    if (!("IntersectionObserver" in window)) {
+        els.forEach(v => { v.src = v.dataset.src; v.removeAttribute("data-src"); });
+        return;
+    }
+    const io = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            const v = entry.target;
+            v.src = v.dataset.src;
+            v.removeAttribute("data-src");
+            io.unobserve(v);
+        });
+    }, { rootMargin: "200px" });
+    els.forEach(v => io.observe(v));
+}
+
 function goHome() { location.href = "/"; }
 function goQueue() { location.href = `/?queue=${slug}`; }
 
@@ -99,8 +120,8 @@ async function load() {
         <div class="card">
             ${m.url
                 ? (m.media_type === "video"
-                    ? `<video src="${m.url}" controls></video>`
-                    : `<img src="${m.url}">`)
+                    ? `<video data-src="${m.url}" controls></video>`
+                    : `<img src="${m.url}" loading="lazy">`)
                 : "<p>(couldn't load media)</p>"}
             ${attachToConcept
                 ? `<button onclick="attachClip('${m.id}')" style="margin-top:8px;">Attach to concept</button>`
@@ -116,6 +137,7 @@ async function load() {
             </div>
         </div>
     `).join("") : "<p>Nothing here yet.</p>";
+    lazyVideos(document.getElementById("media"));
 }
 
 async function moveClip(id) {
