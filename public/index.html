@@ -114,7 +114,7 @@
     <div id="queueFilterChip"></div>
     <div id="posts"></div>
     <div style="margin-top:14px;">
-      <button onclick="togglePostsArchived()" id="postsArchivedToggle" style="font-size:12px; background:none; border:1px solid #ccc; border-radius:4px; padding:4px 10px; cursor:pointer;">Show already scheduled</button>
+      <button onclick="togglePostsArchived()" id="postsArchivedToggle" style="font-size:12px; background:none; border:1px solid #ccc; border-radius:4px; padding:4px 10px; cursor:pointer;">Show approved/already scheduled</button>
       <div id="postsArchived" style="display:none; margin-top:10px; opacity:0.6;"></div>
     </div>
   </section>
@@ -502,8 +502,13 @@ async function loadPosts() {
         ? `<span class="filterchip">${filterClient.name} only<button onclick="clearQueueFilter()">✕ show all</button></span>`
         : "";
 
-    const active = posts.filter(p => !p.isScheduled);
-    const archived = posts.filter(p => p.isScheduled);
+    // Once a post is approved, Josh picks it up on the Calendar tab from
+    // here on -- it shouldn't keep sitting in the main queue just because
+    // it hasn't been scheduled yet. Only "needs_review" posts count as
+    // active; approved and scheduled posts both move to the collapsed
+    // "already approved/scheduled" section.
+    const active = posts.filter(p => p.status === "needs_review" && !p.isScheduled);
+    const archived = posts.filter(p => p.status !== "needs_review" || p.isScheduled);
 
     document.getElementById("posts").innerHTML = active.length
         ? active.map(postCardHtml).join("")
@@ -513,7 +518,7 @@ async function loadPosts() {
         ? archived.map(postCardHtml).join("")
         : "<p>None yet.</p>";
     document.getElementById("postsArchivedToggle").textContent =
-        `${document.getElementById("postsArchived").style.display === "none" ? "Show" : "Hide"} already scheduled (${archived.length})`;
+        `${document.getElementById("postsArchived").style.display === "none" ? "Show" : "Hide"} approved/already scheduled (${archived.length})`;
 
     lazyVideos(document.getElementById("posts"));
     lazyVideos(document.getElementById("postsArchived"));
@@ -987,7 +992,7 @@ function togglePostsArchived() {
     const el = document.getElementById("postsArchived");
     el.style.display = el.style.display === "none" ? "block" : "none";
     const count = el.querySelectorAll(".card").length;
-    document.getElementById("postsArchivedToggle").textContent = `${el.style.display === "none" ? "Show" : "Hide"} already scheduled (${count})`;
+    document.getElementById("postsArchivedToggle").textContent = `${el.style.display === "none" ? "Show" : "Hide"} approved/already scheduled (${count})`;
 }
 
 function toggleConceptsArchived() {
