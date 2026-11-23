@@ -1629,9 +1629,23 @@ app.delete("/api/scheduled-posts/:id", requireLogin, async (req, res) => {
 // upload-post.com at all, confirmed against their own upload history, sat
 // in our DB reading as successfully sent. Now: any non-2xx status, any
 // `error` field, OR a missing request_id all count as failure.
+// Real gap caught 2026-11-23: several failure paths below returned an
+// error to the caller but never wrote anything back to scheduled_posts.
+// The immediate "Scheduled, but X/Y sent" toast is the only place that
+// error ever showed -- gone the moment the page is left or reloaded,
+// after which the Calendar just shows a bare "Send" button forever with
+// no sign anything ever went wrong. Every real failure now persists a
+// "failed" status + the actual reason, so the Calendar can show it.
+async function markSendFailed(scheduledPostId, platform, msg) {
+    await supabase.from("scheduled_posts")
+        .update({ upload_post_status: "failed", upload_post_error: msg })
+        .eq("id", scheduledPostId);
+    return { id: scheduledPostId, ok: false, error: msg, platform };
+}
+
 async function sendScheduledPostToUploadPost(scheduledPostId) {
     if (!process.env.UPLOAD_POST_API_KEY) {
-        return { id: scheduledPostId, ok: false, error: "No upload-post.com API key configured yet." };
+        return markSendFailed(scheduledPostId, undefined, "No upload-post.com API key configured yet.");
     }
 
     const { data: sched, error: sErr } = await supabase
@@ -1662,19 +1676,19 @@ async function sendScheduledPostToUploadPost(scheduledPostId) {
         }
     }
     if (!mediaPath) {
-        return { id: scheduledPostId, ok: false, error: "this post has no finished video yet -- trim/crop + Finish it first", platform: sched.platform };
+        return markSendFailed(scheduledPostId, sched.platform, "this post has no finished video yet -- trim/crop + Finish it first");
     }
 
     const { data: account } = await supabase
         .from("platform_accounts").select("*")
         .eq("client_id", sched.client_id).eq("platform", sched.platform).maybeSingle();
     if (!account || !account.upload_post_profile) {
-        return { id: scheduledPostId, ok: false, error: `no upload-post profile connected yet for ${sched.platform}`, platform: sched.platform };
+        return markSendFailed(scheduledPostId, sched.platform, `no upload-post profile connected yet for ${sched.platform}`);
     }
 
     const { data: fileBlob, error: dlErr } = await supabase.storage.from("raw-media").download(mediaPath);
     if (dlErr) {
-        return { id: scheduledPostId, ok: false, error: "couldn't fetch the finished video: " + dlErr.message, platform: sched.platform };
+        return markSendFailed(scheduledPostId, sched.platform, "couldn't fetch the finished video: " + dlErr.message);
     }
 
     const caption = sched.posts.caption_final || sched.posts.caption_draft || "";
@@ -1695,15 +1709,12 @@ async function sendScheduledPostToUploadPost(scheduledPostId) {
         });
         result = await resp.json();
     } catch (e) {
-        const msg = "upload-post request failed: " + e.message;
-        await supabase.from("scheduled_posts").update({ upload_post_status: "failed", upload_post_error: msg }).eq("id", sched.id);
-        return { id: scheduledPostId, ok: false, error: msg, platform: sched.platform };
+        return markSendFailed(scheduledPostId, sched.platform, "upload-post request failed: " + e.message);
     }
 
     if (!resp.ok || result.error || !result.request_id) {
         const msg = result.error || result.message || `upload-post returned ${resp.status} with no usable request id`;
-        await supabase.from("scheduled_posts").update({ upload_post_status: "failed", upload_post_error: msg }).eq("id", sched.id);
-        return { id: scheduledPostId, ok: false, error: msg, platform: sched.platform };
+        return markSendFailed(scheduledPostId, sched.platform, msg);
     }
 
     await supabase.from("scheduled_posts")
