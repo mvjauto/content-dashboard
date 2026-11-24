@@ -58,10 +58,6 @@
   .companyrow .stats .num { font-weight: 700; color: #2d6b48; font-size: 16px; display: block; }
   .companyrow .inactive { color: #bbb; font-size: 11px; }
   .companyrow .viewbtn { font-size: 12px; padding: 5px 10px; margin-left: 10px; }
-  .filterchip { display: inline-block; background: #e8f3ec; color: #2d6b48; font-size: 13px;
-                padding: 5px 12px; border-radius: 14px; margin-bottom: 12px; }
-  .filterchip button { background: none; border: none; color: #2d6b48; font-weight: 700; cursor: pointer;
-                        margin-left: 6px; padding: 0; }
 </style>
 </head>
 <body>
@@ -111,7 +107,7 @@
 
   <section id="section-queue" style="display:none;">
     <h2>Approval queue</h2>
-    <div id="queueFilterChip"></div>
+    <div id="queueCompanyTabs" style="margin-bottom:14px; display:flex; flex-wrap:wrap; gap:6px;"></div>
     <div id="posts"></div>
     <div style="margin-top:14px;">
       <button onclick="togglePostsArchived()" id="postsArchivedToggle" style="font-size:12px; background:none; border:1px solid #ccc; border-radius:4px; padding:4px 10px; cursor:pointer;">Show approved/already scheduled</button>
@@ -507,14 +503,33 @@ async function deletePostCompletely(postId) {
     loadPosts();
 }
 
+// Always-visible company switcher for the Approval Queue -- before this,
+// the only way to scope the queue to one company was the Home page's
+// per-company "Approval Queue" button, and even that filter vanished the
+// moment you clicked the top-nav Queue tab (clearQueueFilter() fires on
+// every click there, by design, as the tab's reset entry point). Real gap
+// Josh hit: approve something for one company, and everything from every
+// OTHER company is sitting right there mixed in with no way to narrow it
+// down without leaving the tab. This renders every time loadPosts() runs,
+// so it always reflects the current filter, including the top-nav reset.
+function renderQueueCompanyTabs() {
+    const pill = (active, label, onclick) => `
+        <button onclick="${onclick}" style="font-size:13px; padding:5px 12px; border-radius:16px; cursor:pointer;
+            border:1px solid ${active ? "#2d6b48" : "#ccc"};
+            background:${active ? "#2d6b48" : "none"};
+            color:${active ? "#fff" : "#333"};">${label}</button>`;
+    const tabs = [pill(!queueFilterSlug, "All companies", "clearQueueFilter()")]
+        .concat(myClients.map(c => pill(
+            queueFilterSlug === c.slug, c.name, `showCompanyQueue('${c.slug}')`)));
+    document.getElementById("queueCompanyTabs").innerHTML = tabs.join("");
+}
+
 async function loadPosts() {
     const all = await (await fetch("/api/posts")).json();
     const filterClient = queueFilterSlug ? myClients.find(c => c.slug === queueFilterSlug) : null;
     const posts = filterClient ? all.filter(p => p.client_id === filterClient.id) : all;
 
-    document.getElementById("queueFilterChip").innerHTML = filterClient
-        ? `<span class="filterchip">${filterClient.name} only<button onclick="clearQueueFilter()">✕ show all</button></span>`
-        : "";
+    renderQueueCompanyTabs();
 
     // Once a post is approved, Josh picks it up on the Calendar tab from
     // here on -- it shouldn't keep sitting in the main queue just because
